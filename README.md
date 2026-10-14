@@ -2,6 +2,10 @@
 
 Turn an [Atlas](https://www.worldlabs.ai) export into a clean camera-path visual and export it as a video.
 
+[![Open the web app: camera-path-studio.netlify.app](https://img.shields.io/badge/Open_the_web_app-camera--path--studio.netlify.app-8ab4ff?style=for-the-badge)](https://camera-path-studio.netlify.app)
+
+**[camera-path-studio.netlify.app](https://camera-path-studio.netlify.app)**: runs in your browser, with nothing to install.
+
 ![Camera Path Studio: an Atlas take with its camera path inset, and the side panel](docs/hero.gif)
 
 Drop in the export's `.zip`, pick a layout, adjust the look in the side panel, and export an MP4. It runs entirely in your browser, and nothing is uploaded anywhere.
@@ -101,6 +105,7 @@ With the local server, these are the endpoints the page uses:
 server.py    optional local server: serves the page and a takes folder, unpacks .zip imports, runs ffmpeg
 index.html   page layout and styles
 app.js       everything else: loading takes, the 3D scene (three.js), drawing, export, side panel
+favicon.svg  site icon (+ PNG versions for Safari and older browsers)
 docs/        the README's preview
 ```
 

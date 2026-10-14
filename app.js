@@ -295,6 +295,7 @@ async function takeSource(name) {
   }
   const zip = await localTakes.get(name);
   if (!zip) throw new Error(`there's no take called ${name} in this browser`);
+  setLoading('Unpacking take…');
   const files = await unpack(zip);
   const scenePath = findScene(files);
   const dir = scenePath.slice(0, -'scene.json'.length);
@@ -334,12 +335,14 @@ async function loadTake(name) {
     inputTex.colorSpace = THREE.SRGBColorSpace;
   }
   if (sj.videoAsset?.url) {
+    setLoading('Loading video…');
     const blob = await (await fetch(abs(sj.videoAsset.url))).blob();
     video.src = URL.createObjectURL(blob);
     await once(video, 'loadeddata');
   }
   T.firstImg = await frameImage(0);
   if (inputs[0]?.depthUrl && T.inputImg) {
+    setLoading('Loading depth…');
     try { T.depth = await loadDepth(inputs[0]); } catch (e) { console.warn('depth', e); }
   }
 }
@@ -1171,11 +1174,14 @@ function toast(msg, kind = '') {
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => el.classList.remove('show'), kind === 'error' ? 8000 : 5000);
 }
-function showProgress(msg, p) {
+// p: 0–1, or null for a step with no measurable progress (the bar then keeps moving)
+function showProgress(msg, p = null) {
   $('overlay').classList.add('show');
   $('overlayText').textContent = msg;
-  $('overlayBar').style.width = `${Math.round(p * 100)}%`;
+  $('overlayBar').parentElement.classList.toggle('busy', p == null);
+  if (p != null) $('overlayBar').style.width = `${Math.round(p * 100)}%`;
 }
+const setLoading = (text) => { $('loadingText').textContent = text; };
 const hideProgress = () => $('overlay').classList.remove('show');
 const toBlob = () => new Promise((r) => stage.toBlob(r, 'image/png'));
 async function postJSON(url, body, json = true) {
@@ -1203,6 +1209,7 @@ function exportName(alpha) {
 
 async function withExportState(fn) {
   pause();
+  showProgress('Preparing…');
   exporting = true;
   setRenderSize(EXPORT_SS);
   overlayFrame = -1;
@@ -1240,7 +1247,7 @@ async function exportVideo(alpha = false) {
       if (!SERVER) return encodeInBrowser(eachFrame);
       const { id } = await postJSON('/api/export/start', { take: T.name, name: exportName(alpha), fps: T.fps, alpha });
       await eachFrame(async (i) => postJSON(`/api/export/frame?id=${id}&i=${i}`, await toBlob(), false));
-      showProgress('Encoding…', 1);
+      showProgress('Encoding…');
       return postJSON(`/api/export/finish?id=${id}`, {});
     });
     download(file);
@@ -1276,7 +1283,7 @@ async function encodeInBrowser(eachFrame) {
     f.close();
     while (encoder.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 4));
   });
-  showProgress('Finishing…', 1);
+  showProgress('Finishing…');
   await encoder.flush();
   if (failure) throw failure;
   muxer.finalize();
@@ -1666,13 +1673,13 @@ const mimeType = (p) => ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpe
 
 async function importHere(file) {
   try {
-    showProgress(`Importing ${file.name}`, 0.3);
+    showProgress(`Importing ${file.name}`);
     const head = await unpack(file, (n) => n.split('/').pop() === 'scene.json');
     if (!findScene(head)) throw new Error('no scene.json in this zip. Is it an Atlas export?');
     const base = file.name.replace(/\.zip$/i, '').replace(/[^A-Za-z0-9._-]+/g, '-') || 'take';
     let name = base;
     for (let k = 2; takes.includes(name); k++) name = `${base}-${k}`;
-    showProgress('Saving in this browser…', 0.8);
+    showProgress('Saving in this browser…');
     await localTakes.put(name, file);
     openTake(name);
   } catch (e) {
@@ -1693,7 +1700,7 @@ function importZip(file) {
   const xhr = new XMLHttpRequest();
   xhr.open('POST', `/api/import?name=${encodeURIComponent(file.name)}`);
   xhr.upload.onprogress = (e) => { if (e.lengthComputable) showProgress(label, (e.loaded / e.total) * 0.9); };
-  xhr.upload.onload = () => showProgress('Unpacking…', 0.95);
+  xhr.upload.onload = () => showProgress('Unpacking…');
   xhr.onload = () => {
     let out = {};
     try { out = JSON.parse(xhr.responseText); } catch {}
@@ -1766,6 +1773,7 @@ async function boot() {
     return;
   }
   $('takeName').textContent = want;
+  setLoading('Loading take…');
   $('loading').hidden = false;
   await Promise.all([document.fonts.load(`600 20px ${SANS}`), document.fonts.load(`500 20px ${MONO}`)]).catch(() => {});
   await loadTake(want);
