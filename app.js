@@ -11,6 +11,10 @@ import GUI from 'lil-gui';
 // Camera Path Studio: draws an Atlas take's camera path over its video (the "Video" layout) or inside a
 // point cloud of the scene ("3D scene"), and exports the result. Everything is drawn into one
 // 1920×1080 canvas, so the preview and the export are the same pixels.
+//
+// It runs two ways. With the local server (python3 server.py), takes live in a folder and ffmpeg encodes
+// exports. Hosted as plain files (e.g. Netlify), the page does it all itself: a dropped .zip is
+// unpacked in the browser and kept in IndexedDB, and MP4s are encoded with WebCodecs.
 
 const W = 1920, H = 1080;
 const SANS = 'Inter, system-ui, sans-serif';
@@ -278,12 +282,38 @@ window.addEventListener('resize', fitStage);
 
 // --------------------------------------------------------------- load take --
 
+let SERVER = false;                // true when the local server is there (python3 server.py)
+
+// A take's scene.json, and a URL for each file it names: from the local server, or (browser-only)
+// unpacked from the take's .zip into in-memory blob URLs.
+async function takeSource(name) {
+  if (SERVER) {
+    const base = `/data/${name.split('/').map(encodeURIComponent).join('/')}/`;
+    const res = await fetch(`${base}scene.json`);
+    if (!res.ok) throw new Error(`no scene.json for ${name}`);
+    return { scene: await res.json(), url: (u) => (u ? base + u : null) };
+  }
+  const zip = await localTakes.get(name);
+  if (!zip) throw new Error(`there's no take called ${name} in this browser`);
+  const files = await unpack(zip);
+  const scenePath = findScene(files);
+  const dir = scenePath.slice(0, -'scene.json'.length);
+  const urls = new Map();
+  const url = (u) => {
+    if (!u) return null;
+    const key = dir + u;
+    if (!urls.has(key)) {
+      if (!files[key]) return null;
+      urls.set(key, URL.createObjectURL(new Blob([files[key]], { type: mimeType(key) })));
+      files[key] = null;                        // the blob has its own copy
+    }
+    return urls.get(key);
+  };
+  return { scene: JSON.parse(new TextDecoder().decode(files[scenePath])), url };
+}
+
 async function loadTake(name) {
-  const base = `/data/${name.split('/').map(encodeURIComponent).join('/')}/`;
-  const res = await fetch(`${base}scene.json`);
-  if (!res.ok) throw new Error(`no scene.json for ${name}`);
-  const sj = await res.json();
-  const abs = (u) => (u ? base + u : null);
+  const { scene: sj, url: abs } = await takeSource(name);
   const frames = sj.frames.map((f) => ({ ...camFrom(f.camera), url: abs(f.imageAsset?.url) }));
   const inputs = (sj.inputs || []).map((f) => ({
     ...camFrom(f.camera),
@@ -1154,13 +1184,19 @@ async function postJSON(url, body, json = true) {
   if (!res.ok || out.error) throw new Error(out.error || res.statusText);
   return out;
 }
-// hand a finished file to the browser as a normal download (a copy stays in the take's exports folder)
+// hand a finished file to the browser as a normal download (with the local server, a copy also stays in
+// the take's exports folder)
 function download({ url, name }) {
   const a = Object.assign(document.createElement('a'), { href: url, download: name });
   document.body.append(a);
   a.click();
   a.remove();
+  if (url.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
+const stamp = () => {
+  const d = new Date(), p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
 function exportName(alpha) {
   return S.exportName || `${T.name.split('/').at(-1)}-${layout === 'world' ? '3d-scene' : 'video'}${alpha ? '-alpha' : ''}`;
 }
@@ -1181,33 +1217,71 @@ async function withExportState(fn) {
   }
 }
 
-// Renders every frame at full size and hands them to the server, which encodes with ffmpeg; the
-// result downloads through the browser. Resolves to the path of the copy in the take's exports folder.
+// Renders every frame at full size and encodes them: with the local server, ffmpeg does it (MP4 or alpha
+// .mov); browser-only, WebCodecs makes the MP4. The result downloads through the browser. Resolves to
+// the saved copy's path (local server) or the downloaded file's name.
 async function exportVideo(alpha = false) {
   if (!T || exporting) return null;
   try {
+    if (alpha && !SERVER) throw new Error('alpha .mov needs the local version (python3 server.py)');
     const file = await withExportState(async () => {
       const n = T.frames.length, dur = n / T.fps;
       const period = dur / Math.max(1, Math.round(dur / WIGGLE_PERIOD));   // so the wiggle loops cleanly
+      const eachFrame = async (use) => {
+        for (let i = 0; i < n; i++) {
+          const img = await frameImage(i);
+          if (i + 1 < n) frameImage(i + 1);
+          if (i >= 2) imageCache.delete(T.frames[i - 2].url);
+          render(i, img, { alpha, t: i / T.fps, period });
+          await use(i);
+          showProgress(`Rendering frame ${i + 1} of ${n}`, (i + 1) / n);
+        }
+      };
+      if (!SERVER) return encodeInBrowser(eachFrame);
       const { id } = await postJSON('/api/export/start', { take: T.name, name: exportName(alpha), fps: T.fps, alpha });
-      for (let i = 0; i < n; i++) {
-        const img = await frameImage(i);
-        if (i + 1 < n) frameImage(i + 1);
-        if (i >= 2) imageCache.delete(T.frames[i - 2].url);
-        render(i, img, { alpha, t: i / T.fps, period });
-        await postJSON(`/api/export/frame?id=${id}&i=${i}`, await toBlob(), false);
-        showProgress(`Rendering frame ${i + 1} of ${n}`, (i + 1) / n);
-      }
+      await eachFrame(async (i) => postJSON(`/api/export/frame?id=${id}&i=${i}`, await toBlob(), false));
       showProgress('Encoding…', 1);
       return postJSON(`/api/export/finish?id=${id}`, {});
     });
     download(file);
     toast(`Downloaded ${file.name}`);
-    return file.path;
+    return file.path ?? file.name;
   } catch (e) {
     toast(`Export failed: ${e.message}`, 'error');
     throw e;
   }
+}
+
+// Browser-only export: each rendered frame goes straight into the browser's H.264 encoder (WebCodecs)
+// and into an .mp4 (mp4-muxer).
+const H264 = ['avc1.640028', 'avc1.4d0028', 'avc1.42e028'];   // High, Main, Baseline profiles at level 4 (1080p)
+async function encodeInBrowser(eachFrame) {
+  if (!('VideoEncoder' in window)) throw new Error('this browser can’t encode video; try Chrome, Edge or Safari');
+  let config = null;
+  for (const codec of H264) {
+    const c = { codec, width: W, height: H, bitrate: 16e6, framerate: T.fps };
+    if ((await VideoEncoder.isConfigSupported(c)).supported) { config = c; break; }
+  }
+  if (!config) throw new Error('this browser can’t encode H.264 video at 1920×1080');
+  const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
+  const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: W, height: H }, fastStart: 'in-memory' });
+  let failure = null;
+  const encoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => { failure = e; } });
+  encoder.configure(config);
+  const us = 1e6 / T.fps;
+  await eachFrame(async (i) => {
+    if (failure) throw failure;
+    const f = new VideoFrame(stage, { timestamp: Math.round(i * us), duration: Math.round(us) });
+    encoder.encode(f, { keyFrame: i % (2 * T.fps) === 0 });
+    f.close();
+    while (encoder.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 4));
+  });
+  showProgress('Finishing…', 1);
+  await encoder.flush();
+  if (failure) throw failure;
+  muxer.finalize();
+  const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
+  return { url: URL.createObjectURL(blob), name: `${exportName(false)}-${stamp()}.mp4` };
 }
 
 async function snapshot() {
@@ -1215,12 +1289,13 @@ async function snapshot() {
   try {
     const file = await withExportState(async () => {
       render(frame, await frameImage(frame), { t: performance.now() / 1000 });
-      const q = new URLSearchParams({ take: T.name, name: `${exportName(false)}-f${pad(frame + 1)}` });
-      return postJSON(`/api/snapshot?${q}`, await toBlob(), false);
+      const name = `${exportName(false)}-f${pad(frame + 1)}`;
+      if (!SERVER) return { url: URL.createObjectURL(await toBlob()), name: `${name}-${stamp()}.png` };
+      return postJSON(`/api/snapshot?${new URLSearchParams({ take: T.name, name })}`, await toBlob(), false);
     });
     download(file);
     toast(`Downloaded ${file.name}`);
-    return file.path;
+    return file.path ?? file.name;
   } catch (e) {
     toast(`Snapshot failed: ${e.message}`, 'error');
     throw e;
@@ -1525,10 +1600,13 @@ function ask(title, text, okLabel) {
 // Deletes an imported take (its unpacked files and exports) after a confirmation.
 async function removeTake(name) {
   closeMenus();
-  const ok = await ask(`Remove “${name}”?`, 'This deletes the imported take and its exports. Your original .zip isn’t affected.', 'Remove');
+  const ok = await ask(`Remove “${name}”?`, SERVER
+    ? 'This deletes the imported take and its exports. Your original .zip isn’t affected.'
+    : 'This removes it from this browser. Your original .zip isn’t affected.', 'Remove');
   if (!ok) return;
   try {
-    await postJSON(`/api/remove?take=${encodeURIComponent(name)}`, {});
+    if (SERVER) await postJSON(`/api/remove?take=${encodeURIComponent(name)}`, {});
+    else await localTakes.remove(name);
   } catch (e) {
     toast(`Couldn't remove ${name}: ${e.message}`, 'error');
     return;
@@ -1550,11 +1628,66 @@ async function removeTake(name) {
   toast(`Removed ${name}`);
 }
 
-// Uploads the .zip; the server unpacks it into the takes folder, then the new take opens.
+// Browser-only takes: each imported .zip is kept as-is in IndexedDB (so it's still there next visit) and
+// unpacked in the page when it's opened.
+const localTakes = (() => {
+  let db = null;
+  const open = () => (db ??= new Promise((res, rej) => {
+    const req = indexedDB.open('camera-path-studio', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('takes');
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
+  }));
+  // resolves once the transaction has committed (so a save is safe even if the page reloads right after)
+  const run = async (mode, fn) => {
+    const tx = (await open()).transaction('takes', mode);
+    const req = fn(tx.objectStore('takes'));
+    return new Promise((res, rej) => {
+      tx.oncomplete = () => res(req.result);
+      tx.onerror = tx.onabort = () => rej(tx.error || req.error);
+    });
+  };
+  return {
+    list: async () => (await run('readonly', (s) => s.getAllKeys())).map(String).sort(),
+    get: (name) => run('readonly', (s) => s.get(name)),
+    put: (name, zip) => run('readwrite', (s) => s.put(zip, name)),
+    remove: (name) => run('readwrite', (s) => s.delete(name)),
+  };
+})();
+// unzip in a worker (fflate), skipping macOS resource-fork clutter; `only` limits which files are inflated
+async function unpack(zip, only = () => true) {
+  const { unzip } = await import('fflate');
+  const data = new Uint8Array(await zip.arrayBuffer());
+  const keep = (f) => !f.name.startsWith('__MACOSX/') && !f.name.split('/').pop().startsWith('._') && !f.name.endsWith('/') && only(f.name);
+  return new Promise((res, rej) => unzip(data, { filter: keep }, (err, files) => (err ? rej(err) : res(files))));
+}
+const findScene = (files) => Object.keys(files).filter((p) => p.split('/').pop() === 'scene.json').sort((a, b) => a.length - b.length)[0];
+const mimeType = (p) => ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', mp4: 'video/mp4', json: 'application/json' })[p.split('.').pop().toLowerCase()] || 'application/octet-stream';
+
+async function importHere(file) {
+  try {
+    showProgress(`Importing ${file.name}`, 0.3);
+    const head = await unpack(file, (n) => n.split('/').pop() === 'scene.json');
+    if (!findScene(head)) throw new Error('no scene.json in this zip. Is it an Atlas export?');
+    const base = file.name.replace(/\.zip$/i, '').replace(/[^A-Za-z0-9._-]+/g, '-') || 'take';
+    let name = base;
+    for (let k = 2; takes.includes(name); k++) name = `${base}-${k}`;
+    showProgress('Saving in this browser…', 0.8);
+    await localTakes.put(name, file);
+    openTake(name);
+  } catch (e) {
+    hideProgress();
+    toast(`Import failed: ${e.message}`, 'error');
+  }
+}
+
+// With the local server, uploads the .zip and the server unpacks it into the takes folder; browser-only,
+// it's kept in this browser. Then the new take opens.
 function importZip(file) {
   if (!file) return;
   if (!/\.zip$/i.test(file.name)) { toast('Drop a .zip of an Atlas export.', 'error'); return; }
   pause();
+  if (!SERVER) { importHere(file); return; }
   const label = `Importing ${file.name}`;
   showProgress(label, 0);
   const xhr = new XMLHttpRequest();
@@ -1614,9 +1747,17 @@ async function boot() {
   if (LAYOUTS[params.get('layout')]) layout = params.get('layout');
   loadLayoutSettings(layout);
   updateLayoutSeg();
-  const info = await (await fetch('/api/takes')).json();
-  takes = info.takes;
-  removable = new Set(info.removable || []);
+  // the local server answers /api/takes; a static host (Netlify etc.) doesn't, and then it's browser-only
+  const info = await fetch('/api/takes').then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  SERVER = Array.isArray(info?.takes);
+  if (SERVER) {
+    takes = info.takes;
+    removable = new Set(info.removable || []);
+  } else {
+    takes = await localTakes.list().catch(() => []);
+    removable = new Set(takes);
+  }
+  $('exportMenu').querySelector('[data-export="alpha"]').hidden = !SERVER;   // ProRes needs ffmpeg
   buildTakeMenu();
   const want = params.get('take') ?? store.lastTake;
   if (!takes.includes(want)) {
@@ -1637,12 +1778,13 @@ async function boot() {
   afterLayoutChange();
   setFrame(0);
   for (const id of ['playBtn', 'exportBtn', 'exportMore']) $(id).disabled = false;
-  if (!info.ffmpeg) {
-    // without ffmpeg only snapshots work
+  const canEncode = SERVER ? info.ffmpeg : 'VideoEncoder' in window;
+  if (!canEncode) {
+    // only snapshots work
     const videoExports = [$('exportBtn'), ...$('exportMenu').querySelectorAll('[data-export="mp4"], [data-export="alpha"]')];
     for (const el of videoExports) {
       el.disabled = true;
-      el.title = 'Install ffmpeg (and restart the server) to export video';
+      el.title = SERVER ? 'Install ffmpeg (and restart the server) to export video' : 'This browser can’t encode video. Try Chrome, Edge or Safari.';
     }
   }
   $('info').textContent = `${T.frames.length} frames · ${T.fps} fps · ${T.total.toFixed(2)} ${UNIT} path${T.depth ? ' · depth' : ''}`;
@@ -1665,6 +1807,6 @@ window.studio = {
   setLayout: switchLayout,                            // 'overlay' | 'world'
   setFrame: (i) => { pause(); setFrame(i); },
   set: setSetting,                                    // any side-panel setting, e.g. set('pathWidth', 8)
-  exportVideo: ({ alpha = false } = {}) => exportVideo(alpha),   // resolves to the saved path
+  exportVideo: ({ alpha = false } = {}) => exportVideo(alpha),   // resolves to the saved path (or file name)
   snapshot,                                           // resolves to the saved path
 };

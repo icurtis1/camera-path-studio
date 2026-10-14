@@ -27,6 +27,8 @@
     header { grid-column: 1 / 3; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) 296px; align-items: center;
       height: 52px; border-bottom: 1px solid var(--line); }
     .hl, .hr { display: flex; align-items: center; min-width: 0; height: 100%; }
+    .hl { overflow: hidden; }
+    .hl .menu-wrap { min-width: 0; }
     .hl { padding-left: 16px; }
     .hr { justify-content: flex-end; padding: 0 12px; border-left: 1px solid var(--line); }
     .brand { display: flex; align-items: center; gap: 9px; font-weight: 500; color: var(--muted); white-space: nowrap; }
@@ -50,6 +52,7 @@
     .menu-item .check { width: 14px; color: var(--accent); }
     .menu-item.action { color: var(--accent); }
     .menu-item.rich { display: grid; gap: 1px; padding: 8px 10px; }
+    .menu-item[hidden] { display: none; }
     .menu-item.rich .d { color: var(--muted); font-size: 12px; }
     .menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
     .menu-row { display: flex; align-items: center; border-radius: 6px; }
@@ -64,6 +67,12 @@
       background: none; color: var(--muted); font-weight: 500; white-space: nowrap; transition: color .15s, background .15s; }
     .seg button:hover { color: var(--text); }
     .seg button[aria-pressed="true"] { background: var(--fill-active); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+    /* narrower windows: drop the app name and let the layout buttons shrink, so nothing overlaps */
+    @media (max-width: 1180px) {
+      .brand .name, .slash { display: none; }
+      .brand { margin-right: 8px; }
+      .seg button { min-width: 0; padding: 0 12px; }
+    }
     .btn { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border-radius: var(--radius);
       border: 1px solid var(--line-strong); background: var(--fill); font-weight: 500; white-space: nowrap; }
     .btn:hover:not(:disabled) { background: var(--fill-hover); }
@@ -198,7 +207,9 @@
     "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
       "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
-      "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.2/dist/lil-gui.esm.min.js"
+      "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.2/dist/lil-gui.esm.min.js",
+      "fflate": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js",
+      "mp4-muxer": "https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.5/build/mp4-muxer.mjs"
     }
   }
   </script>
@@ -209,7 +220,7 @@
       <div class="hl">
         <div class="brand">
           <span class="mark"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 12.8C5.5 12 6 4 10 4c1.6 0 2.6 1 3.4 2.4" stroke-dasharray="0.1 2.8"/><circle cx="2.5" cy="12.8" r="1.8" fill="currentColor" stroke="none"/><circle cx="13.5" cy="6.6" r="1.8" fill="currentColor" stroke="none"/></svg></span>
-          Camera Path Studio
+          <span class="name">Camera Path Studio</span>
         </div>
         <span class="slash">/</span>
         <div class="menu-wrap">
