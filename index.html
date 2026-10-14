@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Camera Path Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #09090b; --panel: #0e0e11; --raised: #16161a; --line: rgba(255,255,255,.06); --line-strong: rgba(255,255,255,.1);
+      --fill: rgba(255,255,255,.04); --fill-hover: rgba(255,255,255,.07); --fill-active: rgba(255,255,255,.1);
+      --text: #ededf0; --muted: #8e8f98; --faint: #5b5c64; --accent: #8ab4ff; --danger: #ff8a8a; --radius: 8px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 13px/1.45 Inter, system-ui, sans-serif; letter-spacing: -.005em; -webkit-font-smoothing: antialiased; overflow: hidden; }
+    button { font: inherit; color: inherit; cursor: pointer; }
+    button:disabled { opacity: .35; cursor: default; }
+    button:focus-visible { outline: 2px solid rgba(138,180,255,.5); outline-offset: 1px; }
+    svg { display: block; flex: none; }
+    #app { display: grid; grid-template-columns: 1fr 296px; grid-template-rows: 52px 1fr 52px; height: 100%; }
+
+    /* ---- top bar: brand / take · layout · export */
+    /* same columns as the app below: the switch centers over the video, export sits over the side panel */
+    header { grid-column: 1 / 3; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) 296px; align-items: center;
+      height: 52px; border-bottom: 1px solid var(--line); }
+    .hl, .hr { display: flex; align-items: center; min-width: 0; height: 100%; }
+    .hl { padding-left: 16px; }
+    .hr { justify-content: flex-end; padding: 0 12px; border-left: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 9px; font-weight: 500; color: var(--muted); white-space: nowrap; }
+    .brand .mark { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; color: #fff;
+      background: linear-gradient(140deg, #8ab4ff, #b49cff); box-shadow: inset 0 0 0 1px rgba(255,255,255,.15); }
+    .slash { color: var(--faint); margin: 0 6px 0 10px; font-size: 15px; font-weight: 300; }
+    .crumb { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; min-width: 0; max-width: 300px;
+      border: 0; border-radius: 7px; background: transparent; font-weight: 500; }
+    .crumb:hover, .crumb[aria-expanded="true"] { background: var(--fill-hover); }
+    .crumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .crumb svg { color: var(--muted); }
+    .menu-wrap { position: relative; display: flex; }
+    .menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; min-width: 230px; max-height: 60vh; overflow: auto;
+      padding: 4px; background: rgba(22,22,26,.96); backdrop-filter: blur(12px); border: 1px solid var(--line-strong);
+      border-radius: 10px; box-shadow: 0 18px 48px rgba(0,0,0,.55); }
+    .menu.right { left: auto; right: 0; }
+    .menu[hidden] { display: none; }
+    .menu-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px; border: 0; border-radius: 6px;
+      background: none; text-align: left; white-space: nowrap; }
+    .menu-item:hover:not(:disabled) { background: var(--fill-hover); }
+    .menu-item .check { width: 14px; color: var(--accent); }
+    .menu-item.action { color: var(--accent); }
+    .menu-item.rich { display: grid; gap: 1px; padding: 8px 10px; }
+    .menu-item.rich .d { color: var(--muted); font-size: 12px; }
+    .menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+    .menu-row { display: flex; align-items: center; border-radius: 6px; }
+    .menu-row:hover { background: var(--fill-hover); }
+    .menu-row .menu-item:hover { background: none; }
+    .menu-remove { display: grid; place-items: center; flex: none; width: 26px; height: 26px; margin-right: 3px; border: 0; border-radius: 5px;
+      background: none; color: var(--muted); opacity: 0; transition: opacity .12s; }
+    .menu-row:hover .menu-remove, .menu-remove:focus-visible { opacity: 1; }
+    .menu-remove:hover { color: var(--danger); background: rgba(255,138,138,.1); }
+    .seg { display: grid; grid-template-columns: 1fr 1fr; padding: 2px; gap: 2px; background: var(--fill); border: 1px solid var(--line); border-radius: 9px; }
+    .seg button { display: flex; align-items: center; justify-content: center; gap: 7px; min-width: 144px; height: 26px; padding: 0 14px; border: 0; border-radius: 7px;
+      background: none; color: var(--muted); font-weight: 500; white-space: nowrap; transition: color .15s, background .15s; }
+    .seg button:hover { color: var(--text); }
+    .seg button[aria-pressed="true"] { background: var(--fill-active); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+    .btn { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border-radius: var(--radius);
+      border: 1px solid var(--line-strong); background: var(--fill); font-weight: 500; white-space: nowrap; }
+    .btn:hover:not(:disabled) { background: var(--fill-hover); }
+    .btn.primary { background: #ededf0; border-color: #ededf0; color: #0b0b0e; }
+    .btn.primary:hover:not(:disabled) { background: #fff; border-color: #fff; }
+    .split .btn:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+    .split .btn.more { padding: 0 7px; border-radius: 0 var(--radius) var(--radius) 0; border-left: 1px solid rgba(0,0,0,.18); }
+
+    /* ---- stage */
+    #viewport { position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; padding: 20px; }
+    #stageWrap { position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 1px var(--line), 0 24px 64px rgba(0,0,0,.5); }
+    #stageWrap[hidden] { display: none; }
+    #stage { display: block; width: 100%; height: 100%;
+      background: repeating-conic-gradient(#141417 0% 25%, #19191d 0% 50%) 50% / 20px 20px; }
+    #hit { position: absolute; cursor: grab; border-radius: 4px; outline: 1px solid transparent; transition: outline-color .15s; }
+    #hit:hover { outline-color: rgba(138,180,255,.3); }
+    #hit:active { cursor: grabbing; }
+    #hit[hidden] { display: none; }
+    /* "drag to rotate": shown until the first drag, then on hover (preview only, never exported) */
+    #hit .hint { position: absolute; left: 50%; top: 10px; transform: translate(-50%, -3px); display: flex; align-items: center; gap: 6px;
+      padding: 5px 10px 5px 8px; border-radius: 999px; background: rgba(12,12,15,.72); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.12); color: #fff; font-size: 11.5px; font-weight: 500; white-space: nowrap;
+      opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; }
+    #hit .hint span { color: rgba(255,255,255,.55); }
+    #hit:hover .hint, #hit.teach .hint { opacity: 1; transform: translate(-50%, 0); }
+    #hit:active .hint { opacity: 0; }
+    #loading { color: var(--muted); }
+
+    /* ---- side panel (lil-gui) */
+    #side { grid-row: 2 / 4; grid-column: 2; overflow-y: auto; scrollbar-gutter: stable; scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,.12) transparent; background: var(--panel); border-left: 1px solid var(--line); }
+    #side .lil-gui.root { width: 100% !important; border: 0;
+      --background-color: transparent; --widget-color: var(--fill); --hover-color: var(--fill-hover); --focus-color: var(--fill-active);
+      --number-color: var(--accent); --string-color: var(--text); --text-color: var(--text);
+      --title-background-color: transparent; --title-text-color: var(--text);
+      --font-family: Inter, system-ui, sans-serif; --font-size: 12px; --input-font-size: 12px;
+      --widget-height: 24px; --name-width: 44%; --padding: 6px; --spacing: 6px; --widget-border-radius: 6px; --slider-knob-width: 2px; }
+    .side-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; justify-content: space-between;
+      height: 40px; padding: 13px 14px 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+    .side-head .label { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .side-head .sub { font-size: 12px; color: var(--faint); }
+    #side .lil-gui.root > .title { display: none; }
+    /* the panel itself scrolls; lil-gui's own inner scroller would flash a scrollbar (and shift things) on 1px overflows */
+    #side .lil-gui.root > .children { overflow: visible; }
+    #side .lil-gui .children:empty::before { content: none; }
+    #side .lil-gui .lil-gui { border-bottom: 1px solid var(--line); }
+    #side .lil-gui .lil-gui > .title { height: 40px; line-height: 40px; padding: 0 14px; border: 0; font-weight: 500; color: #d6d7dc; background: none; }
+    #side .lil-gui .lil-gui > .title:hover { color: #fff; }
+    /* space under each section's controls lives inside the part that animates, so folding is smooth */
+    #side .lil-gui .lil-gui > .children::after { content: ''; display: block; height: 8px; }
+    #side .lil-gui .controller { padding: 0 14px; }
+    #side .lil-gui .controller .name { color: var(--muted); }
+    #side .lil-gui .controller.function button { background: var(--fill); border: 1px solid var(--line); }
+    #side .lil-gui input, #side .lil-gui select { border-radius: 6px; }
+    #side .lil-gui input[type="checkbox"] { width: 15px; height: 15px; border-radius: 3px; }
+
+    /* ---- timeline */
+    footer { grid-column: 1; display: flex; align-items: center; gap: 14px; padding: 0 20px; border-top: 1px solid var(--line); }
+    #playBtn { width: 30px; height: 30px; border-radius: 50%; border: 0; display: grid; place-items: center; background: #ededf0; color: #0b0b0e; }
+    #playBtn:hover:not(:disabled) { background: #fff; }
+    #scrub { flex: 1; -webkit-appearance: none; appearance: none; height: 16px; background: transparent; cursor: pointer; --p: 0%; }
+    #scrub::-webkit-slider-runnable-track { height: 3px; border-radius: 2px;
+      background: linear-gradient(to right, var(--text) var(--p), rgba(255,255,255,.1) var(--p)); }
+    #scrub::-webkit-slider-thumb { -webkit-appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%;
+      background: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.08), 0 1px 3px rgba(0,0,0,.5); transition: transform .1s; }
+    #scrub:hover::-webkit-slider-thumb { transform: scale(1.15); }
+    #scrub::-moz-range-track { height: 3px; border-radius: 2px; background: rgba(255,255,255,.1); }
+    #scrub::-moz-range-progress { height: 3px; border-radius: 2px; background: var(--text); }
+    #scrub::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: #fff; }
+    #frameLabel { font: 12px 'JetBrains Mono', ui-monospace, monospace; color: var(--text); min-width: 88px; text-align: right; }
+    #info { color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ---- welcome / drop / progress / toast */
+    #welcome { position: fixed; inset: 52px 0 0 0; z-index: 20; display: grid; place-items: center; padding: 24px; background: var(--bg); }
+    #welcome[hidden] { display: none; }
+    .welcome-inner { width: min(540px, 100%); display: grid; gap: 22px; }
+    .dropzone { display: grid; justify-items: center; gap: 10px; padding: 48px 32px; text-align: center; border-radius: 16px;
+      border: 1px dashed var(--line-strong); background: var(--panel); transition: border-color .15s, background .15s; }
+    .dropzone.over { border-color: var(--accent); background: #0f131b; }
+    .dropzone .icon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: var(--fill-hover); color: var(--text); margin-bottom: 6px; }
+    .dropzone h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.02em; }
+    .dropzone p { margin: 0; color: var(--muted); max-width: 400px; }
+    .dropzone code { font: 12px 'JetBrains Mono', monospace; color: var(--text); background: var(--fill-hover); padding: 1px 5px; border-radius: 4px; }
+    .dropzone .btn { margin-top: 12px; }
+    .recent h2 { margin: 0 0 8px; font-size: 12px; font-weight: 500; color: var(--muted); }
+    .recent .list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .recent .list button { height: 30px; padding: 0 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--fill); }
+    .recent .list button:hover { background: var(--fill-hover); }
+    #dropOverlay { position: fixed; inset: 0; z-index: 40; display: none; place-items: center; pointer-events: none;
+      background: rgba(9,9,11,.75); backdrop-filter: blur(6px); }
+    #dropOverlay.show { display: grid; }
+    #dropOverlay div { padding: 26px 40px; border: 1px dashed var(--accent); border-radius: 16px; font-size: 15px; font-weight: 500; }
+    #overlay { position: fixed; inset: 0; z-index: 50; display: none; place-items: center; background: rgba(5,5,7,.65); backdrop-filter: blur(4px); }
+    #overlay.show { display: grid; }
+    #overlay .card { width: 320px; padding: 18px 20px; background: var(--raised); border: 1px solid var(--line-strong); border-radius: 12px; }
+    #overlay .bar { height: 3px; margin-top: 14px; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08); }
+    #overlay .bar div { height: 100%; width: 0; background: var(--text); transition: width .1s; }
+    #confirm { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; background: rgba(5,5,7,.6); backdrop-filter: blur(4px); }
+    #confirm[hidden] { display: none; }
+    #confirm .card { width: min(380px, calc(100vw - 32px)); padding: 20px; background: var(--raised); border: 1px solid var(--line-strong);
+      border-radius: 12px; box-shadow: 0 24px 64px rgba(0,0,0,.55); }
+    #confirm h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; letter-spacing: -.01em; overflow-wrap: anywhere; }
+    #confirm p { margin: 0; color: var(--muted); }
+    #confirm .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .btn.danger { background: #e5484d; border-color: #e5484d; color: #fff; }
+    .btn.danger:hover:not(:disabled) { background: #f2555a; border-color: #f2555a; }
+    /* color picker popover (replaces the system color dialog) */
+    .picker { position: fixed; z-index: 45; width: 216px; padding: 10px; display: grid; gap: 10px;
+      background: rgba(22,22,26,.97); backdrop-filter: blur(12px); border: 1px solid var(--line-strong); border-radius: 10px;
+      box-shadow: 0 18px 48px rgba(0,0,0,.55); }
+    .picker[hidden] { display: none; }
+    .picker .sv { position: relative; height: 128px; border-radius: 6px; cursor: crosshair; touch-action: none; }
+    .picker .sv i { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%;
+      border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.45); pointer-events: none; }
+    .picker .hue { -webkit-appearance: none; appearance: none; width: 100%; height: 10px; margin: 0; border-radius: 5px; outline: none; cursor: pointer;
+      background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+    .picker .hue::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.45); }
+    .picker .hue::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
+    .picker .row { display: flex; align-items: center; gap: 8px; }
+    .picker .chip { width: 26px; height: 26px; flex: none; border-radius: 6px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.15); }
+    .picker .hex { flex: 1; min-width: 0; height: 26px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--fill);
+      color: var(--text); font: 12px 'JetBrains Mono', ui-monospace, monospace; outline: none; }
+    .picker .hex:focus { border-color: var(--line-strong); }
+    #toast { position: fixed; left: calc(50% - 148px); bottom: 68px; z-index: 60; transform: translate(-50%, 8px); max-width: min(640px, 70vw);
+      padding: 10px 14px; border-radius: 10px; background: rgba(22,22,26,.96); backdrop-filter: blur(12px); border: 1px solid var(--line-strong);
+      box-shadow: 0 12px 32px rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; overflow-wrap: anywhere; }
+    #toast.show { opacity: 1; transform: translate(-50%, 0); }
+    #toast.error { border-color: rgba(255,138,138,.35); color: var(--danger); }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
+      "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.2/dist/lil-gui.esm.min.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="hl">
+        <div class="brand">
+          <span class="mark"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 12.8C5.5 12 6 4 10 4c1.6 0 2.6 1 3.4 2.4" stroke-dasharray="0.1 2.8"/><circle cx="2.5" cy="12.8" r="1.8" fill="currentColor" stroke="none"/><circle cx="13.5" cy="6.6" r="1.8" fill="currentColor" stroke="none"/></svg></span>
+          Camera Path Studio
+        </div>
+        <span class="slash">/</span>
+        <div class="menu-wrap">
+          <button id="takeBtn" class="crumb" aria-haspopup="menu" aria-expanded="false" title="Switch take, or import an Atlas export">
+            <span id="takeName">Choose a take</span>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.75L6 7.25l2.5-2.5"/></svg>
+          </button>
+          <div id="takeMenu" class="menu" role="menu" hidden></div>
+        </div>
+      </div>
+      <div class="seg" id="layoutSeg" role="group" aria-label="Layout">
+        <button data-layout="overlay" aria-pressed="false" title="The video full-frame, with the 3D camera path inset">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="3" width="13" height="10" rx="2"/><rect x="3.5" y="8" width="4.5" height="3" rx=".7" fill="currentColor" stroke="none"/></svg>
+          Video
+        </button>
+        <button data-layout="world" aria-pressed="false" title="The camera path in a 3D point cloud of the scene, with the video picture-in-picture">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 1.8l5.6 3.1v6.2L8 14.2 2.4 11.1V4.9z"/><path d="M2.4 4.9L8 8l5.6-3.1M8 8v6.2"/></svg>
+          3D scene
+        </button>
+      </div>
+      <div></div>
+      <div class="hr">
+        <div class="menu-wrap split">
+          <button id="exportBtn" class="btn primary" title="Render every frame to an H.264 .mp4" disabled>Export MP4</button>
+          <button id="exportMore" class="btn primary more" aria-haspopup="menu" aria-expanded="false" aria-label="More export options" title="More export options" disabled>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.75L6 7.25l2.5-2.5"/></svg>
+          </button>
+          <div id="exportMenu" class="menu right" role="menu" hidden>
+            <button class="menu-item rich" role="menuitem" data-export="mp4"><span>MP4 video</span><span class="d">H.264, 1920×1080</span></button>
+            <button class="menu-item rich" role="menuitem" data-export="alpha"><span>Alpha .mov</span><span class="d">Path only, transparent background</span></button>
+            <div class="menu-sep"></div>
+            <button class="menu-item rich" role="menuitem" data-export="snapshot"><span>Snapshot</span><span class="d">This frame as a PNG</span></button>
+          </div>
+        </div>
+      </div>
+    </header>
+    <main id="viewport">
+      <span id="loading" hidden>Loading…</span>
+      <div id="stageWrap" hidden>
+        <canvas id="stage"></canvas>
+        <div id="hit" title="Drag to rotate · right-drag to pan · scroll to zoom">
+          <div class="hint"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8A5.5 5.5 0 1 1 11.4 3.6"/><path d="M11.8 1.2l-.3 2.6 2.6.3"/></svg>Drag to rotate<span>· scroll to zoom</span></div>
+        </div>
+      </div>
+    </main>
+    <aside id="side">
+      <div class="side-head"><span class="label">Style</span><span class="sub" id="sideLayout"></span></div>
+    </aside>
+    <footer>
+      <button id="playBtn" title="Play / pause (Space) · step with ← →" aria-label="Play" disabled>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path id="playIcon" d="M3 1.5v9l7.5-4.5z"/></svg>
+      </button>
+      <input id="scrub" type="range" min="0" max="0" value="0" step="1" aria-label="Frame">
+      <span id="frameLabel">0000 / 0000</span>
+      <span id="info"></span>
+    </footer>
+  </div>
+
+  <div id="welcome" hidden>
+    <div class="welcome-inner">
+      <div class="dropzone" id="dropzone">
+        <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7.5 8.5L12 4l4.5 4.5"/><path d="M4 14v4.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V14"/></svg></div>
+        <h1>Drop an Atlas export</h1>
+        <p>A <code>.zip</code> of the export folder: <code>scene.json</code>, <code>inputs/</code>, <code>outputs/</code> and <code>video.mp4</code>.</p>
+        <button class="btn primary" id="chooseBtn">Choose .zip…</button>
+      </div>
+      <div class="recent" id="recent" hidden>
+        <h2>Or open a take</h2>
+        <div class="list" id="recentList"></div>
+      </div>
+    </div>
+  </div>
+  <div id="dropOverlay"><div>Drop the .zip to import</div></div>
+  <div id="overlay"><div class="card"><div id="overlayText">Working…</div><div class="bar"><div id="overlayBar"></div></div></div></div>
+  <div id="confirm" hidden>
+    <div class="card" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+      <h3 id="confirmTitle"></h3>
+      <p id="confirmText"></p>
+      <div class="actions"><button class="btn" id="confirmCancel">Cancel</button><button class="btn danger" id="confirmOk">Remove</button></div>
+    </div>
+  </div>
+  <div id="toast" role="status"></div>
+  <input id="fileInput" type="file" accept=".zip,application/zip" hidden>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
