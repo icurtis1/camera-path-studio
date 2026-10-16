@@ -8,15 +8,16 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import GUI from 'lil-gui';
 
-// Camera Path Studio: draws an Atlas take's camera path over its video (the "Video" layout) or inside a
-// point cloud of the scene ("3D scene"), and exports the result. Everything is drawn into one
-// 1920×1080 canvas, so the preview and the export are the same pixels.
+// Camera Path Studio: draws an Atlas take's camera path over its video (the "Video" layout), inside a
+// point cloud of the scene ("3D scene"), or beside the video with the input photos ("Breakdown"), and
+// exports the result. Everything is drawn into one canvas (1920×1080; 2560×1080 for Breakdown), so the
+// preview and the export are the same pixels.
 //
 // It runs two ways. With the local server (python3 server.py), takes live in a folder and ffmpeg encodes
 // exports. Hosted as plain files (e.g. Netlify), the page does it all itself: a dropped .zip is
 // unpacked in the browser and kept in IndexedDB, and MP4s are encoded with WebCodecs.
 
-const W = 1920, H = 1080;
+let W = 1920, H = 1080;              // the stage; set per layout (FIXED.size)
 const SANS = 'Inter, system-ui, sans-serif';
 const MONO = '"JetBrains Mono", ui-monospace, monospace';
 const $ = (id) => document.getElementById(id);
@@ -54,11 +55,15 @@ const LAYOUTS = {
   },
   // the path inside a point cloud of the scene, with the video picture-in-picture
   world: { cloud: true, keyframes: 'trail', wiggle: 'circle', showStats: false, showProgress: false },
+  // the input photos in a grid above the 3D view, with the video beside them
+  breakdown: { inputCount: 99, bg3d: '#131418' },      // 99: all of a take's input photos
 };
 // Fixed details of each layout's look (not in the side panel).
 const FIXED = {
-  overlay: { stageBg: '#000000', camWidth: 3.5, camFill: 0.1, shadow: 0.5, pathOnTop: true, transparent3d: true, fog: false, gridColor: '#ffffff', gridOpacity: 0.25 },
-  world: { stageBg: '#0b0c10', camWidth: 2.5, camFill: 0.12, shadow: 0, pathOnTop: false, transparent3d: false, fog: true, gridColor: '#262a33', gridOpacity: 1 },
+  overlay: { size: [1920, 1080], stageBg: '#000000', camWidth: 3.5, camFill: 0.1, shadow: 0.5, pathOnTop: true, transparent3d: true, fog: false, gridColor: '#ffffff', gridOpacity: 0.25 },
+  world: { size: [1920, 1080], stageBg: '#0b0c10', camWidth: 2.5, camFill: 0.12, shadow: 0, pathOnTop: false, transparent3d: false, fog: true, gridColor: '#262a33', gridOpacity: 1 },
+  // the video keeps its full 1920×1080 on the right; the left column is a third of that
+  breakdown: { size: [2560, 1080], stageBg: '#0b0c10', camWidth: 2.5, camFill: 0.12, shadow: 0, pathOnTop: false, transparent3d: false, fog: true, gridColor: '#262a33', gridOpacity: 1 },
 };
 const fx = () => FIXED[layout];
 const TEXT = '#ffffff', ACCENT = '#8ab4ff', UNIT = 'm';
@@ -75,6 +80,7 @@ const EXPORT_SS = 2;                                // 3D supersampling when exp
 const START_ANGLES = {
   overlay: { path: [0.52, 0.29, -0.81], scene: [-0.05, 0.29, -0.96] },
   world: { path: [0.56, 0.24, -0.8], scene: [-0.02, 0.24, -0.97] },
+  breakdown: { path: [0.56, 0.24, -0.8], scene: [-0.02, 0.24, -0.97] },
 };
 
 // Settings and framing are remembered in the browser.
@@ -247,6 +253,22 @@ function rects() {
       statsLeft: !left,
     };
   }
+  if (layout === 'breakdown') {
+    // the video at full size on the right; on the left, the input photos (16:9 cells, as square a grid
+    // as fits) above the 3D view, which gets the rest of the column
+    const col = W - 1920;
+    const photos = S.showInput && T ? shownInputs().filter((inp) => inp.img) : [];
+    const cols = Math.max(1, Math.ceil(Math.sqrt(photos.length)));
+    const cw = col / cols, ch = (cw * 9) / 16;
+    const edge = (k, size) => Math.round(k * size);
+    const inputs = photos.map((inp, k) => {
+      const cx = k % cols, cy = Math.floor(k / cols);
+      const x = edge(cx, cw), y = edge(cy, ch);
+      return { x, y, w: edge(cx + 1, cw) - x, h: edge(cy + 1, ch) - y, img: inp.img };
+    });
+    const gridH = edge(Math.ceil(photos.length / cols), ch);
+    return { output: { x: col, y: 0, w: W - col, h: H }, view: { x: 0, y: gridH, w: col, h: H - gridH }, inputs, statsLeft: true };
+  }
   // 3D scene: the pictures stack from a corner (output above input), each with its label below
   const w = Math.round(544 * S.pipScale), h = Math.round(306 * S.pipScale), gap = 52, m = 40;
   const right = S.pipCorner.endsWith('right'), top = S.pipCorner.startsWith('top');
@@ -274,6 +296,10 @@ function setRenderSize(factor) {
 }
 
 const show3D = () => layout !== 'overlay' || S.showInset;
+function setStageSize() {
+  [W, H] = fx().size;
+  if (stage.width !== W || stage.height !== H) { stage.width = W; stage.height = H; }
+}
 function fitStage() {
   const vp = $('viewport');
   const s = Math.min((vp.clientWidth - 40) / W, (vp.clientHeight - 40) / H);
@@ -348,7 +374,7 @@ async function loadTake(name) {
     await once(video, 'loadeddata');
   }
   T.firstImg = await frameImage(0);
-  if (inputs.some((inp) => inp.depthUrl)) {
+  if (S.cloud && inputs.some((inp) => inp.depthUrl)) {
     setLoading('Loading depth…');
     await loadShownDepth();
   }
@@ -357,10 +383,11 @@ async function loadTake(name) {
 // the input photos on show: the first `inputCount` of the take's
 const shownInputs = () => T.inputs.slice(0, Math.max(1, Math.round(S.inputCount)));
 
-// Depth maps load the first time their input is shown. Resolves once every shown input's depth is in.
+// Depth maps load the first time the point cloud (or the floor snap) needs them. Resolves once every
+// shown input's depth is in.
 let depthReady = Promise.resolve();
-function loadShownDepth() {
-  const want = shownInputs().filter((inp) => inp.depthUrl && inp.img);
+function loadShownDepth(always = false) {
+  const want = S.cloud || always ? shownInputs().filter((inp) => inp.depthUrl && inp.img) : [];
   for (const inp of want) {
     inp.depthLoad ??= loadDepth(inp).then((d) => { inp.depth = d; }, (e) => console.warn('depth', e));
   }
@@ -766,6 +793,7 @@ function frameAlong(dir, win) {
 // (NDC center + half extents).
 function fitWindow() {
   if (layout === 'overlay') return { cx: 0, cy: -0.05, hx: 0.82, hy: 0.72 };
+  if (layout === 'breakdown') return { cx: 0, cy: 0, hx: 0.8, hy: 0.75 };
   const R = rects();
   if (!R.output && !R.input) return { cx: 0, cy: -0.02, hx: 0.82, hy: 0.7 };
   const col = ((544 * S.pipScale + 40) / W) * 2;        // NDC width of the picture column
@@ -938,18 +966,18 @@ function drawVignette(r) {
   ctx.fillRect(-r.h / 2, -r.h / 2, r.h, r.h);
   ctx.restore();
 }
-// top / bottom shading, so overlays read on bright footage
-function drawScrim() {
+// top / bottom shading over the video, so overlays read on bright footage
+function drawScrim(r) {
   if (!(S.scrim > 0)) return;
-  const bh = H * SCRIM.bottomSize, th = H * SCRIM.topSize;
-  let g = ctx.createLinearGradient(0, H - bh, 0, H);
+  const bh = r.h * SCRIM.bottomSize, th = r.h * SCRIM.topSize, bottom = r.y + r.h;
+  let g = ctx.createLinearGradient(0, bottom - bh, 0, bottom);
   easedStops(g, SCRIM.bottom * S.scrim);
   ctx.fillStyle = g;
-  ctx.fillRect(0, H - bh, W, bh);
-  g = ctx.createLinearGradient(0, 0, 0, th);
+  ctx.fillRect(r.x, bottom - bh, r.w, bh);
+  g = ctx.createLinearGradient(0, r.y, 0, r.y + th);
   easedStops(g, SCRIM.top * S.scrim, true);
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, th);
+  ctx.fillRect(r.x, r.y, r.w, th);
 }
 
 function drawCover(img, r, radius = 0) {
@@ -1000,31 +1028,49 @@ function drawOverlay(i, src, alpha) {
   if (!alpha) {
     drawCover(src, R.output);
     drawVignette(R.output);
-    drawScrim();
+    drawScrim(R.output);
   }
   if (S.showInset) drawGL(R.view);
+  drawVideoHud(i, R.output, R.statsLeft);
+}
+
+function drawBreakdown(i, src, alpha) {
+  const R = rects();
+  drawGL(R.view);
+  if (!alpha) {
+    for (const r of R.inputs) drawCover(r.img, r);
+    drawCover(src, R.output);
+    drawVignette(R.output);
+    drawScrim(R.output);
+  }
+  drawVideoHud(i, R.output, R.statsLeft);
+}
+
+// title, frame counter, camera stats and progress over the video (r)
+function drawVideoHud(i, r, statsLeft) {
   if (!S.showHud) return;
+  const left = r.x + 56, right = r.x + r.w - 56, bottom = r.y + r.h;
   ctx.save();
   ctx.shadowColor = 'rgba(0,0,0,0.45)';
   ctx.shadowBlur = 12;
   const s = stats(i);
-  if (S.title) text(S.title, 56, 86, { size: 40, weight: 700 });
-  if (S.subtitle) text(S.subtitle, 56, 120, { size: 20, alpha: 0.8 });
+  if (S.title) text(S.title, left, r.y + 86, { size: 40, weight: 700 });
+  if (S.subtitle) text(S.subtitle, left, r.y + 120, { size: 20, alpha: 0.8 });
   if (S.showLabels) {
-    text('FRAME', W - 56 - 250, 78, { size: 13, weight: 600, alpha: 0.65, spacing: 1.4 });
-    text(s.frame, W - 56, 78, { size: 22, font: MONO, align: 'right' });
-    text(s.time, W - 56, 108, { size: 18, font: MONO, align: 'right', alpha: 0.75 });
+    text('FRAME', right - 250, r.y + 78, { size: 13, weight: 600, alpha: 0.65, spacing: 1.4 });
+    text(s.frame, right, r.y + 78, { size: 22, font: MONO, align: 'right' });
+    text(s.time, right, r.y + 108, { size: 18, font: MONO, align: 'right', alpha: 0.75 });
   }
   if (S.showStats) {
     const rows = [['TRAVELED', s.traveled], ['SPEED', s.speed], ['YAW · PITCH', s.orient], ['LENS', s.lens], ['POSITION', s.pos]];
-    const bw = 470, bx = R.statsLeft ? 56 : W - 56 - bw, by = H - 56 - (rows.length - 1) * 40;
+    const bw = 470, bx = statsLeft ? left : right - bw, by = bottom - 56 - (rows.length - 1) * 40;
     rows.forEach(([l, v], k) => {
       text(l, bx, by + k * 40, { size: 13, weight: 600, alpha: 0.65, spacing: 1.4 });
       text(v, bx + bw, by + k * 40, { size: 21, font: MONO, align: 'right' });
     });
   }
   ctx.restore();
-  if (S.showProgress) progressBar(0, H - 6, W, 6, i, 'rgba(255,255,255,0.18)');
+  if (S.showProgress) progressBar(r.x, bottom - 6, r.w, 6, i, 'rgba(255,255,255,0.18)');
 }
 
 function drawWorld(i, src, alpha) {
@@ -1114,6 +1160,7 @@ function render(i, src, { alpha = false, t = 0, period = WIGGLE_PERIOD } = {}) {
     ctx.fillRect(0, 0, W, H);
   }
   if (layout === 'overlay') drawOverlay(i, src, alpha);
+  else if (layout === 'breakdown') drawBreakdown(i, src, alpha);
   else drawWorld(i, src, alpha);
 }
 
@@ -1238,8 +1285,9 @@ const stamp = () => {
   const d = new Date(), p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 };
+const FILE_LAYOUT = { overlay: 'video', world: '3d-scene', breakdown: 'breakdown' };   // in export file names
 function exportName(alpha) {
-  return S.exportName || `${T.name.split('/').at(-1)}-${layout === 'world' ? '3d-scene' : 'video'}${alpha ? '-alpha' : ''}`;
+  return S.exportName || `${T.name.split('/').at(-1)}-${FILE_LAYOUT[layout]}${alpha ? '-alpha' : ''}`;
 }
 
 async function withExportState(fn) {
@@ -1296,15 +1344,16 @@ async function exportVideo(alpha = false) {
 
 // Browser-only export: each rendered frame goes straight into the browser's H.264 encoder (WebCodecs)
 // and into an .mp4 (mp4-muxer).
-const H264 = ['avc1.640028', 'avc1.4d0028', 'avc1.42e028'];   // High, Main, Baseline profiles at level 4 (1080p)
+// High, Main and Baseline profiles, at level 4 for 1920×1080 and 5.1 for the wider Breakdown frame
+const h264 = () => ['6400', '4d00', '42e0'].map((p) => `avc1.${p}${W * H > 1920 * 1088 ? '33' : '28'}`);
 async function encodeInBrowser(eachFrame) {
   if (!('VideoEncoder' in window)) throw new Error('this browser can’t encode video; try Chrome, Edge or Safari');
   let config = null;
-  for (const codec of H264) {
+  for (const codec of h264()) {
     const c = { codec, width: W, height: H, bitrate: 16e6, framerate: T.fps };
     if ((await VideoEncoder.isConfigSupported(c)).supported) { config = c; break; }
   }
-  if (!config) throw new Error('this browser can’t encode H.264 video at 1920×1080');
+  if (!config) throw new Error(`this browser can’t encode H.264 video at ${W}×${H}`);
   const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
   const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: W, height: H }, fastStart: 'in-memory' });
   let failure = null;
@@ -1430,7 +1479,8 @@ function refreshGui() {
 }
 const ui = { angle: '' };            // the "snap to angle" menu (not a setting)
 const actions = {
-  snapFloor: () => {
+  snapFloor: async () => {
+    await loadShownDepth(true);
     const y = floorFromCloud();
     if (y != null) setSetting('gridY', +y.toFixed(3));
   },
@@ -1447,11 +1497,12 @@ const REBUILD_OVERLAY = new Set(['pathColor', 'pathWidth', 'futureStyle', 'dashS
 function settingChanged(property, value) {
   if (REBUILD_GRID.has(property)) rebuildGrid();
   if (REBUILD_OVERLAY.has(property)) rebuildOverlay();
-  if (property === 'cloud') rebuildCloud();
-  if (property === 'inputCount') refreshCloud();
+  if (property === 'cloud' || property === 'inputCount') refreshCloud();
   if (property === 'cloudSize' && cloud) cloud.material.size = value;
-  if (RESIZE.has(property) || property === 'showInset') { setRenderSize(1); fitStage(); }
-  if (REFIT.has(property)) refit();
+  // in Breakdown, the input grid decides how much of the column the 3D view gets
+  const gridChanged = layout === 'breakdown' && (property === 'showInput' || property === 'inputCount');
+  if (RESIZE.has(property) || property === 'showInset' || gridChanged) { setRenderSize(1); fitStage(); }
+  if (REFIT.has(property) || gridChanged) refit();
   if (REGRADE.has(property)) regradeTextures();
   save();
 }
@@ -1481,7 +1532,11 @@ function buildGui() {
   c.addColor(S, 'keyColor').name('Keyframe color');
   c.add(S, 'keySize', 0.05, 2, 0.01).name('Keyframe size');
   c.add(S, 'inputCam').name('Input camera');
-  if (T.inputs.length > 1) c.add(S, 'inputCount', 1, T.inputs.length, 1).name('Input images');
+  if (T.inputs.length > 1) {
+    // shows what this take can show (the setting can be higher: Breakdown starts at "all")
+    const count = { get inputCount() { return Math.min(S.inputCount, T.inputs.length); }, set inputCount(n) { S.inputCount = n; } };
+    c.add(count, 'inputCount', 1, T.inputs.length, 1).name('Input images');
+  }
   c.addColor(S, 'inputColor').name('Input color');
   c.add(S, 'inputSize', 0.05, 2, 0.01).name('Input size');
 
@@ -1496,18 +1551,18 @@ function buildGui() {
   layoutOnly.push([v.add(S, 'insetMargin', 0, 300, 1).name('Inset margin (px)'), ['overlay']]);
 
   const pip = gui.addFolder('Output & input');
-  pip.add(S, 'showOutput').name('Show output');
+  layoutOnly.push([pip.add(S, 'showOutput').name('Show output'), ['world']]);
   pip.add(S, 'showInput').name('Show input');
-  pip.add(S, 'pipCorner', { 'Top right': 'top-right', 'Bottom right': 'bottom-right', 'Top left': 'top-left', 'Bottom left': 'bottom-left' }).name('Position');
-  pip.add(S, 'pipScale', 0.5, 1.6, 0.05).name('Size');
-  layoutOnly.push([pip, ['world']]);
+  layoutOnly.push([pip.add(S, 'pipCorner', { 'Top right': 'top-right', 'Bottom right': 'bottom-right', 'Top left': 'top-left', 'Bottom left': 'bottom-left' }).name('Position'), ['world']]);
+  layoutOnly.push([pip.add(S, 'pipScale', 0.5, 1.6, 0.05).name('Size'), ['world']]);
+  layoutOnly.push([pip, ['world', 'breakdown']]);
 
   const look = gui.addFolder('Adjustments');
   look.add(S, 'gradeBrightness', 0.5, 1.5, 0.01).name('Brightness');
   look.add(S, 'gradeContrast', 0.5, 1.5, 0.01).name('Contrast');
   look.add(S, 'gradeSaturation', 0, 2, 0.01).name('Saturation');
   look.add(S, 'vignette', 0, 1, 0.01).name('Vignette');
-  layoutOnly.push([look.add(S, 'scrim', 0, 1.5, 0.01).name('Edge shading'), ['overlay']]);
+  layoutOnly.push([look.add(S, 'scrim', 0, 1.5, 0.01).name('Edge shading'), ['overlay', 'breakdown']]);
 
   const t = gui.addFolder('Text');
   t.add(S, 'showHud').name('Show text');
@@ -1517,7 +1572,7 @@ function buildGui() {
   t.add(S, 'showProgress').name('Progress bar');
   t.add(S, 'showLabels').name('Labels');
 
-  const s = gui.addFolder('Environment');      // background, floor and point cloud (both layouts)
+  const s = gui.addFolder('Environment');      // background, floor and point cloud (every layout)
   s.addColor(S, 'bg3d').name('Background');
   s.add(S, 'grid').name('Grid');
   s.add(S, 'gridY', -3, 3, 0.01).name('Floor height');
@@ -1536,8 +1591,8 @@ function buildGui() {
 
 function afterLayoutChange() {
   picker.close();
-  S.inputCount = clamp(Math.round(S.inputCount), 1, Math.max(1, T.inputs.length));
   updateLayoutSeg();
+  setStageSize();
   setRenderSize(1);
   fitStage();
   rebuildGrid();
@@ -1549,7 +1604,7 @@ function afterLayoutChange() {
   save();
 }
 function switchLayout(l) {
-  if (!LAYOUTS[l]) throw new Error(`unknown layout "${l}" (use "overlay" or "world")`);
+  if (!LAYOUTS[l]) throw new Error(`unknown layout "${l}" (use "overlay", "world" or "breakdown")`);
   if (l === layout) return;
   store.per[layout] = { ...S };
   layout = l;
@@ -1833,7 +1888,7 @@ async function boot() {
       el.title = SERVER ? 'Install ffmpeg (and restart the server) to export video' : 'This browser can’t encode video. Try Chrome, Edge or Safari.';
     }
   }
-  $('info').textContent = `${T.frames.length} frames · ${T.fps} fps · ${T.total.toFixed(2)} ${UNIT} path${T.inputs[0]?.depth ? ' · depth' : ''}${T.inputs.length > 1 ? ` · ${T.inputs.length} inputs` : ''}`;
+  $('info').textContent = `${T.frames.length} frames · ${T.fps} fps · ${T.total.toFixed(2)} ${UNIT} path${T.inputs.some((inp) => inp.depthUrl) ? ' · depth' : ''}${T.inputs.length > 1 ? ` · ${T.inputs.length} inputs` : ''}`;
   if (!store.orbitHintSeen) hit.classList.add('teach');
   requestAnimationFrame(loop);
   readyResolve();
@@ -1850,7 +1905,7 @@ window.studio = {
   ready,                                              // resolves once a take is loaded
   get take() { return T?.name ?? null; },
   get layout() { return layout; },
-  setLayout: switchLayout,                            // 'overlay' | 'world'
+  setLayout: switchLayout,                            // 'overlay' | 'world' | 'breakdown'
   setFrame: (i) => { pause(); setFrame(i); },
   set: setSetting,                                    // any side-panel setting, e.g. set('pathWidth', 8)
   exportVideo: ({ alpha = false } = {}) => exportVideo(alpha),   // resolves to the saved path (or file name)

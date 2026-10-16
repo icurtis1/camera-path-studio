@@ -10,10 +10,11 @@ Turn an [Atlas](https://www.worldlabs.ai) export into a clean camera-path visual
 
 Drop in the export's `.zip`, pick a layout, adjust the look in the side panel, and export an MP4. It runs entirely in your browser, and nothing is uploaded anywhere.
 
-**Two layouts**
+**Three layouts**
 
 - **Video**: the generated video full-frame, with the 3D camera path inset in a corner. The path ahead is dotted, the camera frustum shows the live frame, and the path fades where it passes behind a frame image.
 - **3D scene**: the camera path inside a point cloud of the scene (built from the input photo's depth), with the video and input photo picture-in-picture. A gentle wiggle helps the depth read.
+- **Breakdown**: the input photos in a grid and the 3D camera path below them, in a column beside the video. The video keeps its full 1920×1080, so this layout is 2560×1080. It shows all of a take's input photos to start with.
 
 ## Two ways to run it
 
@@ -59,15 +60,15 @@ Only `scene.json` and the frames it lists are required. An export can have sever
 ## Using it
 
 - **Take**: switch between takes, or import another `.zip`. You can also drag a `.zip` anywhere onto the page. To remove a take you imported, hover it in the menu and click the trash icon. That deletes it from your browser, or with the local server from the takes folder. Folders you pointed the server at yourself can't be removed from the page.
-- **Layout**: switch between Video and 3D scene. Each layout keeps its own style.
-- **Side panel**: Path, Cameras, View, Adjustments, Text, Environment and Export. The 3D scene layout also has **Output & input**, which shows, hides, moves or resizes the video and input-photo pictures. Your settings are saved in your browser.
-- **Several input photos**: when a take has more than one, **Cameras → Input images** sets how many are shown, starting from the first (1 by default). Each one gets its own camera, and in the 3D scene layout the point cloud is built from all of them.
-- **3D view**: in the Video layout that's the corner inset. Drag it to rotate, right-drag to pan, scroll to zoom. **Path → Show path** hides the inset if you only want the video. **View → Snap to angle** reframes it from a preset angle. The framing is remembered per take.
+- **Layout**: switch between Video, 3D scene and Breakdown. Each layout keeps its own style.
+- **Side panel**: Path, Cameras, View, Adjustments, Text, Environment and Export. The 3D scene layout also has **Output & input**, which shows, hides, moves or resizes the video and input-photo pictures; in Breakdown it shows or hides the input photos. Your settings are saved in your browser.
+- **Several input photos**: when a take has more than one, **Cameras → Input images** sets how many are shown, starting from the first (1 by default; all of them in Breakdown). Each one gets its own camera, and the point cloud is built from all of them.
+- **3D view**: in the Video layout that's the corner inset, and in Breakdown the panel under the input photos. Drag it to rotate, right-drag to pan, scroll to zoom. **Path → Show path** hides the inset if you only want the video. **View → Snap to angle** reframes it from a preset angle. The framing is remembered per take.
 - **Timeline**: <kbd>Space</kbd> plays or pauses, <kbd>←</kbd> <kbd>→</kbd> step one frame.
 
 **Export**
 
-- **Export MP4**: every frame at full quality (1920×1080, 2× supersampled 3D), encoded as H.264.
+- **Export MP4**: every frame at full quality (1920×1080, or 2560×1080 for Breakdown, with 2× supersampled 3D), encoded as H.264.
 - **Export alpha .mov**: the path and overlays only, on a transparent background (ProRes 4444), for compositing in Premiere, Resolve or After Effects. This needs the local version, because browsers can't encode ProRes.
 - **Snapshot**: the current frame as a PNG.
 
@@ -79,7 +80,7 @@ The page exposes a small handle, `window.studio`:
 
 ```js
 await studio.ready;                    // a take is loaded
-studio.setLayout('world');             // 'overlay' (Video) or 'world' (3D scene)
+studio.setLayout('world');             // 'overlay' (Video), 'world' (3D scene) or 'breakdown'
 studio.set('pathWidth', 8);            // any side-panel setting (keys are in BASE in app.js)
 studio.setFrame(60);
 const mp4 = await studio.exportVideo();          // downloads it; resolves to the saved copy's path (local) or file name
