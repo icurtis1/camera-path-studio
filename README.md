@@ -50,17 +50,18 @@ The studio reads the export folder as-is:
 my-take/
 ├── scene.json        cameras for every output frame (+ the input photo's camera)
 ├── video.mp4         the generated video (optional; frames are used if it's missing)
-├── inputs/           the input photo, its depth map (.exr) and confidence (.png)
+├── inputs/           the input photo(s), each with a depth map (.exr) and confidence (.png)
 └── outputs/          one image per generated frame
 ```
 
-Only `scene.json` and the frames it lists are required. The input photo's depth is used for the point cloud in the 3D scene layout.
+Only `scene.json` and the frames it lists are required. An export can have several input photos; their depth maps are used for the point cloud in the 3D scene layout.
 
 ## Using it
 
 - **Take**: switch between takes, or import another `.zip`. You can also drag a `.zip` anywhere onto the page. To remove a take you imported, hover it in the menu and click the trash icon. That deletes it from your browser, or with the local server from the takes folder. Folders you pointed the server at yourself can't be removed from the page.
 - **Layout**: switch between Video and 3D scene. Each layout keeps its own style.
 - **Side panel**: Path, Cameras, View, Adjustments, Text, Environment and Export. The 3D scene layout also has **Output & input**, which shows, hides, moves or resizes the video and input-photo pictures. Your settings are saved in your browser.
+- **Several input photos**: when a take has more than one, **Cameras → Input images** sets how many are shown, starting from the first (1 by default). Each one gets its own camera, and in the 3D scene layout the point cloud is built from all of them.
 - **3D view**: in the Video layout that's the corner inset. Drag it to rotate, right-drag to pan, scroll to zoom. **Path → Show path** hides the inset if you only want the video. **View → Snap to angle** reframes it from a preset angle. The framing is remembered per take.
 - **Timeline**: <kbd>Space</kbd> plays or pauses, <kbd>←</kbd> <kbd>→</kbd> step one frame.
 

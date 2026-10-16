@@ -32,6 +32,7 @@ const BASE = {
   camColor: '#8ab4ff', camSize: 0.4, camImage: true,
   keyframes: 'off', keyEvery: 30, keyColor: '#8ab4ff', keySize: 0.22,
   inputCam: true, inputColor: '#f08c00', inputSize: 0.4,
+  inputCount: 1,                       // a take can have several input photos: show the first this many
   // view
   wiggle: 'off', wiggleAmount: 5, insetCorner: 'bottom-left', insetScale: 1, insetMargin: 0,
   // the output video and input photo beside the 3D scene
@@ -224,7 +225,15 @@ function thumb(i) {
   thumbs.set(i, entry);
   return tex;
 }
-let inputTex = null;
+// an input photo's texture for its frustum (graded with the video, see regradeTextures)
+function photoTexture(img) {
+  const c = document.createElement('canvas');
+  c.width = 640; c.height = Math.round((640 * img.naturalHeight) / img.naturalWidth);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 // ------------------------------------------------------------------ layout --
 
@@ -326,14 +335,12 @@ async function loadTake(name) {
   for (let i = 1; i < frames.length; i++) cum.push(cum[i - 1] + frames[i].pos.distanceTo(frames[i - 1].pos));
   T = { name, frames, inputs, cum, fps: sj.fps || 24, total: cum.at(-1) };
 
-  if (inputs[0]?.url) {
-    T.inputImg = await loadImage(inputs[0].url);
-    const c = document.createElement('canvas');
-    c.width = 640; c.height = Math.round((640 * T.inputImg.naturalHeight) / T.inputImg.naturalWidth);
-    c.getContext('2d').drawImage(T.inputImg, 0, 0, c.width, c.height);
-    inputTex = new THREE.CanvasTexture(c);
-    inputTex.colorSpace = THREE.SRGBColorSpace;
-  }
+  // every input photo (they're small); their depth maps load once they're shown, see loadShownDepth
+  await Promise.all(inputs.map(async (inp) => {
+    if (inp.url) inp.img = await loadImage(inp.url).catch((e) => console.warn('input photo', e));
+    if (inp.img) inp.tex = photoTexture(inp.img);
+  }));
+  T.inputImg = inputs[0]?.img;
   if (sj.videoAsset?.url) {
     setLoading('Loading video…');
     const blob = await (await fetch(abs(sj.videoAsset.url))).blob();
@@ -341,10 +348,29 @@ async function loadTake(name) {
     await once(video, 'loadeddata');
   }
   T.firstImg = await frameImage(0);
-  if (inputs[0]?.depthUrl && T.inputImg) {
+  if (inputs.some((inp) => inp.depthUrl)) {
     setLoading('Loading depth…');
-    try { T.depth = await loadDepth(inputs[0]); } catch (e) { console.warn('depth', e); }
+    await loadShownDepth();
   }
+}
+
+// the input photos on show: the first `inputCount` of the take's
+const shownInputs = () => T.inputs.slice(0, Math.max(1, Math.round(S.inputCount)));
+
+// Depth maps load the first time their input is shown. Resolves once every shown input's depth is in.
+let depthReady = Promise.resolve();
+function loadShownDepth() {
+  const want = shownInputs().filter((inp) => inp.depthUrl && inp.img);
+  for (const inp of want) {
+    inp.depthLoad ??= loadDepth(inp).then((d) => { inp.depth = d; }, (e) => console.warn('depth', e));
+  }
+  depthReady = Promise.all(want.map((inp) => inp.depthLoad));
+  return depthReady;
+}
+// after the inputs on show change: load what's needed, then rebuild the point cloud (for the latest change only)
+function refreshCloud() {
+  const p = loadShownDepth();
+  p.then(() => { if (p === depthReady) rebuildCloud(); });
 }
 
 // the input photo's depth map (+ confidence), for the point cloud
@@ -363,7 +389,7 @@ async function loadDepth(inp) {
     conf = new Uint8Array(width * height);
     for (let i = 0; i < conf.length; i++) conf[i] = px[i * 4];
   }
-  return { depth, conf, rgb: pixels(T.inputImg), w: width, h: height, cam: inp };
+  return { depth, conf, rgb: pixels(inp.img), w: width, h: height, cam: inp };
 }
 
 const imageCache = new Map();
@@ -383,7 +409,7 @@ function frameImage(i) {
 function bounds() {
   const b = new THREE.Box3();
   for (const f of T.frames) b.expandByPoint(f.pos);
-  if (S.inputCam) for (const f of T.inputs) b.expandByPoint(f.pos);
+  if (S.inputCam) for (const f of shownInputs()) b.expandByPoint(f.pos);
   return b;
 }
 
@@ -439,28 +465,32 @@ function rebuildGrid() {
   world.add(grid);
 }
 
-// the input photo unprojected through its depth map, one colored point per (strided) pixel
+// the input photos on show, unprojected through their depth maps: one colored point per (strided) pixel
 function rebuildCloud() {
   if (cloud) { world.remove(cloud); dispose(cloud); cloud = null; }
-  if (!S.cloud || !T?.depth) return;
-  const { depth, conf, rgb, w, h, cam } = T.depth;
+  if (!S.cloud || !T) return;
   const st = CLOUD.stride, thr = CLOUD.minConfidence * 255, edge = 0.03 * st;
   const pos = [], col = [];
   const p = v3();
-  for (let y = 0; y < h; y += st) {
-    for (let x = 0; x < w; x += st) {
-      const i = y * w + x, d = depth[i];
-      if (!(d > 0) || d > CLOUD.maxDepth) continue;
-      if (conf && conf[i] < thr) continue;
-      // skip pixels on depth edges, which would smear into streaks
-      const a = depth[y * w + Math.min(x + st, w - 1)], b = depth[Math.min(y + st, h - 1) * w + x];
-      if (Math.abs(a - d) > edge * d || Math.abs(b - d) > edge * d) continue;
-      p.set(((x + 0.5 - cam.cx) / cam.fx) * d, (-(y + 0.5 - cam.cy) / cam.fy) * d, -d)
-        .applyQuaternion(cam.quat).add(cam.pos);
-      pos.push(p.x, p.y, p.z);
-      col.push(LIN[rgb[i * 4]], LIN[rgb[i * 4 + 1]], LIN[rgb[i * 4 + 2]]);
+  for (const inp of shownInputs()) {
+    if (!inp.depth) continue;
+    const { depth, conf, rgb, w, h, cam } = inp.depth;
+    for (let y = 0; y < h; y += st) {
+      for (let x = 0; x < w; x += st) {
+        const i = y * w + x, d = depth[i];
+        if (!(d > 0) || d > CLOUD.maxDepth) continue;
+        if (conf && conf[i] < thr) continue;
+        // skip pixels on depth edges, which would smear into streaks
+        const a = depth[y * w + Math.min(x + st, w - 1)], b = depth[Math.min(y + st, h - 1) * w + x];
+        if (Math.abs(a - d) > edge * d || Math.abs(b - d) > edge * d) continue;
+        p.set(((x + 0.5 - cam.cx) / cam.fx) * d, (-(y + 0.5 - cam.cy) / cam.fy) * d, -d)
+          .applyQuaternion(cam.quat).add(cam.pos);
+        pos.push(p.x, p.y, p.z);
+        col.push(LIN[rgb[i * 4]], LIN[rgb[i * 4 + 1]], LIN[rgb[i * 4 + 2]]);
+      }
     }
   }
+  if (!pos.length) return;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
@@ -470,18 +500,22 @@ function rebuildCloud() {
 
 // a floor height from the lowest part of the point cloud
 function floorFromCloud() {
-  if (!T?.depth) return null;
-  const { depth, w, h, cam } = T.depth;
+  if (!T) return null;
   const ys = [];
   const p = v3();
-  for (let y = 0; y < h; y += 4) {
-    for (let x = 0; x < w; x += 4) {
-      const d = depth[y * w + x];
-      if (!(d > 0) || d > CLOUD.maxDepth) continue;
-      p.set(((x - cam.cx) / cam.fx) * d, (-(y - cam.cy) / cam.fy) * d, -d).applyQuaternion(cam.quat).add(cam.pos);
-      ys.push(p.y);
+  for (const inp of shownInputs()) {
+    if (!inp.depth) continue;
+    const { depth, w, h, cam } = inp.depth;
+    for (let y = 0; y < h; y += 4) {
+      for (let x = 0; x < w; x += 4) {
+        const d = depth[y * w + x];
+        if (!(d > 0) || d > CLOUD.maxDepth) continue;
+        p.set(((x - cam.cx) / cam.fx) * d, (-(y - cam.cy) / cam.fy) * d, -d).applyQuaternion(cam.quat).add(cam.pos);
+        ys.push(p.y);
+      }
     }
   }
+  if (!ys.length) return null;
   ys.sort((a, b) => a - b);
   return ys[Math.floor(ys.length * 0.02)];
 }
@@ -601,9 +635,9 @@ function rebuildOverlay() {
   for (const k of Object.keys(O)) delete O[k];
   const { camWidth, camFill } = fx();
 
-  if (S.inputCam && inputTex) {
-    for (const inp of T.inputs) {
-      makeFrustum(inp, { size: S.inputSize, color: S.inputColor, width: camWidth, fill: camFill, tex: inputTex, order: 4 });
+  if (S.inputCam) {
+    for (const inp of shownInputs()) {
+      if (inp.tex) makeFrustum(inp, { size: S.inputSize, color: S.inputColor, width: camWidth, fill: camFill, tex: inp.tex, order: 4 });
     }
   }
   O.keys = [];
@@ -695,7 +729,7 @@ function fitPoints() {
     }
   };
   T.frames.forEach((f, i) => { if (i % 10 === 0 || i === T.frames.length - 1) add(f, S.camSize); });
-  if (S.inputCam) T.inputs.forEach((c) => add(c, S.inputSize));
+  if (S.inputCam) shownInputs().forEach((c) => add(c, S.inputSize));
   return pts;
 }
 
@@ -878,10 +912,11 @@ function regradeTextures() {
     gradedDraw(t.canvas.getContext('2d'), t.img, 0, 0, t.canvas.width, t.canvas.height);
     t.tex.needsUpdate = true;
   }
-  if (inputTex && T?.inputImg) {
-    const c = inputTex.image;
-    gradedDraw(c.getContext('2d'), T.inputImg, 0, 0, c.width, c.height);
-    inputTex.needsUpdate = true;
+  for (const inp of T?.inputs ?? []) {
+    if (!inp.tex) continue;
+    const c = inp.tex.image;
+    gradedDraw(c.getContext('2d'), inp.img, 0, 0, c.width, c.height);
+    inp.tex.needsUpdate = true;
   }
 }
 function easedStops(g, alpha, reverse = false) {
@@ -1214,7 +1249,7 @@ async function withExportState(fn) {
   setRenderSize(EXPORT_SS);
   overlayFrame = -1;
   try {
-    await Promise.all([...thumbs.values()].map((t) => t.ready));
+    await Promise.all([...[...thumbs.values()].map((t) => t.ready), depthReady]);
     return await fn();
   } finally {
     exporting = false;
@@ -1403,16 +1438,17 @@ const actions = {
 };
 
 // what has to be rebuilt when a setting changes
-const REBUILD_GRID = new Set(['grid', 'gridY', 'inputCam']);
+const REBUILD_GRID = new Set(['grid', 'gridY', 'inputCam', 'inputCount']);
 const RESIZE = new Set(['insetCorner', 'insetScale', 'insetMargin']);
 const REFIT = new Set(['showOutput', 'showInput', 'pipCorner', 'pipScale']);
 const REGRADE = new Set(['gradeBrightness', 'gradeContrast', 'gradeSaturation']);
 const REBUILD_OVERLAY = new Set(['pathColor', 'pathWidth', 'futureStyle', 'dashSize', 'futureOpacity',
-  'camColor', 'camSize', 'camImage', 'keyframes', 'keyEvery', 'keyColor', 'keySize', 'inputCam', 'inputColor', 'inputSize']);
+  'camColor', 'camSize', 'camImage', 'keyframes', 'keyEvery', 'keyColor', 'keySize', 'inputCam', 'inputCount', 'inputColor', 'inputSize']);
 function settingChanged(property, value) {
   if (REBUILD_GRID.has(property)) rebuildGrid();
   if (REBUILD_OVERLAY.has(property)) rebuildOverlay();
   if (property === 'cloud') rebuildCloud();
+  if (property === 'inputCount') refreshCloud();
   if (property === 'cloudSize' && cloud) cloud.material.size = value;
   if (RESIZE.has(property) || property === 'showInset') { setRenderSize(1); fitStage(); }
   if (REFIT.has(property)) refit();
@@ -1445,6 +1481,7 @@ function buildGui() {
   c.addColor(S, 'keyColor').name('Keyframe color');
   c.add(S, 'keySize', 0.05, 2, 0.01).name('Keyframe size');
   c.add(S, 'inputCam').name('Input camera');
+  if (T.inputs.length > 1) c.add(S, 'inputCount', 1, T.inputs.length, 1).name('Input images');
   c.addColor(S, 'inputColor').name('Input color');
   c.add(S, 'inputSize', 0.05, 2, 0.01).name('Input size');
 
@@ -1499,11 +1536,12 @@ function buildGui() {
 
 function afterLayoutChange() {
   picker.close();
+  S.inputCount = clamp(Math.round(S.inputCount), 1, Math.max(1, T.inputs.length));
   updateLayoutSeg();
   setRenderSize(1);
   fitStage();
   rebuildGrid();
-  rebuildCloud();
+  refreshCloud();
   rebuildOverlay();
   regradeTextures();
   restoreView();
@@ -1795,7 +1833,7 @@ async function boot() {
       el.title = SERVER ? 'Install ffmpeg (and restart the server) to export video' : 'This browser can’t encode video. Try Chrome, Edge or Safari.';
     }
   }
-  $('info').textContent = `${T.frames.length} frames · ${T.fps} fps · ${T.total.toFixed(2)} ${UNIT} path${T.depth ? ' · depth' : ''}`;
+  $('info').textContent = `${T.frames.length} frames · ${T.fps} fps · ${T.total.toFixed(2)} ${UNIT} path${T.inputs[0]?.depth ? ' · depth' : ''}${T.inputs.length > 1 ? ` · ${T.inputs.length} inputs` : ''}`;
   if (!store.orbitHintSeen) hit.classList.add('teach');
   requestAnimationFrame(loop);
   readyResolve();
