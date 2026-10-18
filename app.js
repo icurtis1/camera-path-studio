@@ -43,7 +43,7 @@ const BASE = {
   // text
   showHud: false, title: 'Atlas', subtitle: 'Camera-controlled generation', showStats: true, showProgress: true, showLabels: true,
   // 3D scene
-  bg3d: '#0d0e12', grid: true, gridY: 0, cloud: false, cloudSize: 0.012,
+  bg3d: '#0d0e12', grid: true, gridY: 0, cloud: false, cloudSize: 0.012, cloudOpacity: 1,
   // export
   exportName: '',
 };
@@ -243,6 +243,22 @@ function photoTexture(img) {
 
 // ------------------------------------------------------------------ layout --
 
+// The input photos on show as a grid of 16:9 cells, as square as fits, filling width w from (x, y).
+// Returns the cells (each with its photo) and the grid's height.
+function inputGrid(x, y, w, gap = 0) {
+  const photos = T ? shownInputs().filter((inp) => inp.img) : [];
+  const cols = Math.max(1, Math.ceil(Math.sqrt(photos.length)));
+  const cw = (w - gap * (cols - 1)) / cols, ch = (cw * 9) / 16;
+  // rounded per edge, so cells without a gap meet exactly
+  const cells = photos.map((inp, k) => {
+    const cx = k % cols, cy = Math.floor(k / cols);
+    const x0 = x + Math.round(cx * (cw + gap)), y0 = y + Math.round(cy * (ch + gap));
+    return { x: x0, y: y0, w: x + Math.round(cx * (cw + gap) + cw) - x0, h: y + Math.round(cy * (ch + gap) + ch) - y0, img: inp.img };
+  });
+  const rows = Math.ceil(photos.length / cols);
+  return { cells, h: rows ? Math.round(rows * ch + (rows - 1) * gap) : 0 };
+}
+
 function rects() {
   if (layout === 'overlay') {
     const w = Math.round(720 * S.insetScale), h = Math.round(480 * S.insetScale), m = S.insetMargin;
@@ -257,28 +273,23 @@ function rects() {
     // the video at full size on the right; on the left, the input photos (16:9 cells, as square a grid
     // as fits) above the 3D view, which gets the rest of the column
     const col = W - 1920;
-    const photos = S.showInput && T ? shownInputs().filter((inp) => inp.img) : [];
-    const cols = Math.max(1, Math.ceil(Math.sqrt(photos.length)));
-    const cw = col / cols, ch = (cw * 9) / 16;
-    const edge = (k, size) => Math.round(k * size);
-    const inputs = photos.map((inp, k) => {
-      const cx = k % cols, cy = Math.floor(k / cols);
-      const x = edge(cx, cw), y = edge(cy, ch);
-      return { x, y, w: edge(cx + 1, cw) - x, h: edge(cy + 1, ch) - y, img: inp.img };
-    });
-    const gridH = edge(Math.ceil(photos.length / cols), ch);
-    return { output: { x: col, y: 0, w: W - col, h: H }, view: { x: 0, y: gridH, w: col, h: H - gridH }, inputs, statsLeft: true };
+    const grid = S.showInput ? inputGrid(0, 0, col) : { cells: [], h: 0 };
+    return { output: { x: col, y: 0, w: W - col, h: H }, view: { x: 0, y: grid.h, w: col, h: H - grid.h }, inputs: grid.cells, statsLeft: true };
   }
-  // 3D scene: the pictures stack from a corner (output above input), each with its label below
+  // 3D scene: the pictures stack from a corner (output above input), each with its label below; with
+  // several input photos on show, the input picture is a small grid of them
   const w = Math.round(544 * S.pipScale), h = Math.round(306 * S.pipScale), gap = 52, m = 40;
   const right = S.pipCorner.endsWith('right'), top = S.pipCorner.startsWith('top');
-  const shown = [S.showOutput && 'output', S.showInput && 'input'].filter(Boolean);
-  const out = { view: { x: 0, y: 0, w: W, h: H }, output: null, input: null, pipRight: right };
-  let y = top ? m : H - m - 36 - h - (shown.length - 1) * (h + gap);
-  for (const k of shown) {
-    out[k] = { x: right ? W - m - w : m, y, w, h };
-    y += h + gap;
+  const x = right ? W - m - w : m;
+  const grid = S.showInput ? inputGrid(x, 0, w, Math.round(8 * S.pipScale)) : { cells: [], h: 0 };
+  const shown = [S.showOutput && ['output', h], grid.cells.length && ['input', grid.h]].filter(Boolean);
+  const out = { view: { x: 0, y: 0, w: W, h: H }, output: null, input: null, inputs: grid.cells, pipRight: right };
+  let y = top ? m : H - m - 36 - shown.reduce((sum, [, bh]) => sum + bh + gap, -gap);
+  for (const [k, bh] of shown) {
+    out[k] = { x, y, w, h: bh };
+    y += bh + gap;
   }
+  for (const c of grid.cells) c.y += out.input.y;
   return out;
 }
 
@@ -366,7 +377,6 @@ async function loadTake(name) {
     if (inp.url) inp.img = await loadImage(inp.url).catch((e) => console.warn('input photo', e));
     if (inp.img) inp.tex = photoTexture(inp.img);
   }));
-  T.inputImg = inputs[0]?.img;
   if (sj.videoAsset?.url) {
     setLoading('Loading video…');
     const blob = await (await fetch(abs(sj.videoAsset.url))).blob();
@@ -521,8 +531,21 @@ function rebuildCloud() {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  cloud = new THREE.Points(geo, new THREE.PointsMaterial({ size: S.cloudSize, vertexColors: true, sizeAttenuation: true }));
+  cloud = new THREE.Points(geo, new THREE.PointsMaterial({ vertexColors: true, sizeAttenuation: true }));
+  styleCloud();
   world.add(cloud);
+}
+
+// point size and opacity; see-through points don't hide what's behind them (no depth writes)
+function styleCloud() {
+  const m = cloud.material, seeThrough = S.cloudOpacity < 1;
+  m.size = S.cloudSize;
+  m.opacity = S.cloudOpacity;
+  if (m.transparent !== seeThrough) {
+    m.transparent = seeThrough;
+    m.depthWrite = !seeThrough;
+    m.needsUpdate = true;
+  }
 }
 
 // a floor height from the lowest part of the point cloud
@@ -749,8 +772,10 @@ function updateOverlay(i) {
 // Points that should stay in frame: the path and a few frustums.
 function fitPoints() {
   const pts = T.frames.map((f) => f.pos);
+  // a frustum: its apex (the camera) and the corners of its far end
   const add = (cam, size) => {
     const h = 2 * Math.tan(cam.vfov / 2) * size, w = (h * cam.w) / cam.h;
+    pts.push(cam.pos);
     for (const [x, y] of [[-1, 1], [1, 1], [1, -1], [-1, -1]]) {
       pts.push(v3((x * w) / 2, (y * h) / 2, -size).applyQuaternion(cam.quat).add(cam.pos));
     }
@@ -769,22 +794,42 @@ function frameAlong(dir, win) {
   const vf = THREE.MathUtils.degToRad(cam3.fov);
   let dist = (box.getSize(v3()).length() / 2 / Math.sin(vf / 2)) * 1.5;
   const q = v3(), right = v3(), up = v3();
-  for (let it = 0; it < 8; it++) {
+  // the points' bounds on screen (NDC) with the camera at target + dir * dist
+  const measure = () => {
     cam3.position.copy(target).addScaledVector(dir, dist);
     cam3.lookAt(target);
     cam3.updateMatrixWorld();
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const p of pts) {
-      q.copy(p).project(cam3);
-      x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x);
-      y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y);
-    }
     right.setFromMatrixColumn(cam3.matrixWorld, 0);
     up.setFromMatrixColumn(cam3.matrixWorld, 1);
+    const b = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+    for (const p of pts) {
+      q.copy(p).project(cam3);
+      b.x0 = Math.min(b.x0, q.x); b.x1 = Math.max(b.x1, q.x);
+      b.y0 = Math.min(b.y0, q.y); b.y1 = Math.max(b.y1, q.y);
+    }
+    return b;
+  };
+  const fill = (b) => Math.max((b.x1 - b.x0) / 2 / win.hx, (b.y1 - b.y0) / 2 / win.hy, 0.05);
+  // move the target so the points' center lands at (cx, cy) on screen
+  const shift = (b, cx, cy) => {
     const halfH = Math.tan(vf / 2) * dist, halfW = halfH * cam3.aspect;
-    target.addScaledVector(right, ((x0 + x1) / 2 - win.cx) * halfW).addScaledVector(up, ((y0 + y1) / 2 - win.cy) * halfH);
-    dist *= Math.max((x1 - x0) / 2 / win.hx, (y1 - y0) / 2 / win.hy, 0.05);
+    target.addScaledVector(right, ((b.x0 + b.x1) / 2 - cx) * halfW).addScaledVector(up, ((b.y0 + b.y1) / 2 - cy) * halfH);
+  };
+  // 1. center the points on the target and size them to the window (the target stays on the points
+  //    while the distance changes, so this settles)
+  for (let it = 0; it < 8; it++) {
+    const b = measure();
+    shift(b, 0, 0);
+    dist *= fill(b);
   }
+  // 2. slide them into the window, re-sizing in small steps: as the camera moves in, the points nearest
+  //    it grow faster than the rest, so full steps overshoot on views looking down a long path
+  const slide = (n) => { for (let it = 0; it < n; it++) shift(measure(), win.cx, win.cy); };
+  for (let round = 0; round < 12; round++) {
+    slide(4);
+    dist *= Math.sqrt(fill(measure()));
+  }
+  slide(6);
   controls.target.copy(target);
   cam3.position.copy(target).addScaledVector(dir, dist);
 }
@@ -1078,13 +1123,18 @@ function drawWorld(i, src, alpha) {
   drawGL(R.view);
   if (!alpha) {
     drawVignette(R.view);
-    for (const [r, img, label] of [[R.output, src, 'Output'], [R.input, T.inputImg, 'Input']]) {
-      if (!r || !img) continue;
-      drawCover(img, r, 10);
+    const picture = (img, r, radius) => {
+      drawCover(img, r, radius);
       ctx.strokeStyle = 'rgba(255,255,255,0.18)';
       ctx.lineWidth = 1.5;
-      roundRect(r.x, r.y, r.w, r.h, 10); ctx.stroke();
-      if (S.showLabels) text(label, r.x, r.y + r.h + 30, { size: 17, weight: 600, color: label === 'Input' ? S.inputColor : ACCENT });
+      roundRect(r.x, r.y, r.w, r.h, radius); ctx.stroke();
+    };
+    if (R.output && src) picture(src, R.output, 10);
+    for (const c of R.inputs) picture(c.img, c, R.inputs.length > 1 ? 6 : 10);
+    if (S.showLabels) {
+      const label = (str, r, color) => text(str, r.x, r.y + r.h + 30, { size: 17, weight: 600, color });
+      if (R.output && src) label('Output', R.output, ACCENT);
+      if (R.input) label(R.inputs.length > 1 ? 'Inputs' : 'Input', R.input, S.inputColor);
     }
   }
   if (!S.showHud) return;
@@ -1498,7 +1548,7 @@ function settingChanged(property, value) {
   if (REBUILD_GRID.has(property)) rebuildGrid();
   if (REBUILD_OVERLAY.has(property)) rebuildOverlay();
   if (property === 'cloud' || property === 'inputCount') refreshCloud();
-  if (property === 'cloudSize' && cloud) cloud.material.size = value;
+  if ((property === 'cloudSize' || property === 'cloudOpacity') && cloud) styleCloud();
   // in Breakdown, the input grid decides how much of the column the 3D view gets
   const gridChanged = layout === 'breakdown' && (property === 'showInput' || property === 'inputCount');
   if (RESIZE.has(property) || property === 'showInset' || gridChanged) { setRenderSize(1); fitStage(); }
@@ -1579,6 +1629,7 @@ function buildGui() {
   s.add(actions, 'snapFloor').name('Snap floor to depth');
   s.add(S, 'cloud').name('Point cloud');
   s.add(S, 'cloudSize', 0.001, 0.06, 0.001).name('Point size');
+  s.add(S, 'cloudOpacity', 0, 1, 0.01).name('Point opacity');
 
   const e = gui.addFolder('Export');
   e.add(S, 'exportName').name('File name');

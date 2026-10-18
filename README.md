@@ -13,7 +13,7 @@ Drop in the export's `.zip`, pick a layout, adjust the look in the side panel, a
 **Three layouts**
 
 - **Video**: the generated video full-frame, with the 3D camera path inset in a corner. The path ahead is dotted, the camera frustum shows the live frame, and the path fades where it passes behind a frame image.
-- **3D scene**: the camera path inside a point cloud of the scene (built from the input photo's depth), with the video and input photo picture-in-picture. A gentle wiggle helps the depth read.
+- **3D scene**: the camera path inside a point cloud of the scene (built from the input photo's depth), with the video and input photo picture-in-picture (a small grid of photos when several are shown). A gentle wiggle helps the depth read.
 - **Breakdown**: the input photos in a grid and the 3D camera path below them, in a column beside the video. The video keeps its full 1920×1080, so this layout is 2560×1080. It shows all of a take's input photos to start with.
 
 ## Two ways to run it
@@ -62,7 +62,7 @@ Only `scene.json` and the frames it lists are required. An export can have sever
 - **Take**: switch between takes, or import another `.zip`. You can also drag a `.zip` anywhere onto the page. To remove a take you imported, hover it in the menu and click the trash icon. That deletes it from your browser, or with the local server from the takes folder. Folders you pointed the server at yourself can't be removed from the page.
 - **Layout**: switch between Video, 3D scene and Breakdown. Each layout keeps its own style.
 - **Side panel**: Path, Cameras, View, Adjustments, Text, Environment and Export. The 3D scene layout also has **Output & input**, which shows, hides, moves or resizes the video and input-photo pictures; in Breakdown it shows or hides the input photos. Your settings are saved in your browser.
-- **Several input photos**: when a take has more than one, **Cameras → Input images** sets how many are shown, starting from the first (1 by default; all of them in Breakdown). Each one gets its own camera, and the point cloud is built from all of them.
+- **Several input photos**: when a take has more than one, **Cameras → Input images** sets how many are shown, starting from the first (1 by default; all of them in Breakdown). Each one gets its own camera, the point cloud is built from all of them, and the input picture in 3D scene becomes a small grid. **Environment → Point opacity** makes the point cloud see-through.
 - **3D view**: in the Video layout that's the corner inset, and in Breakdown the panel under the input photos. Drag it to rotate, right-drag to pan, scroll to zoom. **Path → Show path** hides the inset if you only want the video. **View → Snap to angle** reframes it from a preset angle. The framing is remembered per take.
 - **Timeline**: <kbd>Space</kbd> plays or pauses, <kbd>←</kbd> <kbd>→</kbd> step one frame.
 
