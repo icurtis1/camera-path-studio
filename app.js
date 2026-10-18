@@ -35,6 +35,7 @@ const BASE = {
   inputCam: true, inputColor: '#f08c00', inputSize: 0.4,
   inputCount: 1,                       // a take can have several input photos: show the first this many
   // view
+  follow: false,                       // keep the 3D view on the moving camera (for scenes too big to see whole)
   wiggle: 'off', wiggleAmount: 5, insetCorner: 'bottom-left', insetScale: 1, insetMargin: 0,
   // the output video and input photo beside the 3D scene
   showOutput: true, showInput: true, pipCorner: 'top-right', pipScale: 1,
@@ -74,6 +75,7 @@ const SCRIM = { top: 0.31, topSize: 0.12, bottom: 0.56, bottomSize: 0.4 };   // 
 const WIGGLE_PERIOD = 2.5;                          // seconds; exports fit a whole number of cycles
 const CLOUD = { stride: 2, minConfidence: 0.3, maxDepth: 12 };
 const GRID_CELL = 0.5;
+const FOLLOW_DISTANCE = 7;                          // how far back Follow camera starts, in camera sizes
 const EXPORT_SS = 2;                                // 3D supersampling when exporting
 // Where the 3D view starts on a take you haven't framed yet, as [side, up, forward] relative to the
 // path's direction of travel ("path"), or to the input camera's heading for loops ("scene").
@@ -876,9 +878,12 @@ function fromRel(basis, [a, b, c]) {
 // you chose, both relative to the path's travel direction (used for paths
 // that go somewhere, so side-on stays side-on) and relative to the scene
 // (used for loops). A new take opens from that angle, re-framed to fit.
+// the follow view is kept apart from the overview, so turning Follow camera off brings the overview back
+const viewKey = () => (S.follow ? `${layout}-follow` : layout);
 function saveView() {
   const p = cam3.position.toArray(), t = controls.target.toArray();
-  (store.views[T.name] ??= {})[layout] = { p, t };
+  (store.views[T.name] ??= {})[viewKey()] = { p, t };
+  if (S.follow) { save(); return; }
   const a = (store.angles[layout] ??= {});
   a.scene = toRel(sceneBasis(), p, t);
   const pb = pathBasis();
@@ -900,36 +905,68 @@ function applyPreset(kind) {
   else dir = side.clone().multiplyScalar(0.85).addScaledVector(fwd, -0.45).addScaledVector(up, 0.6);
   dir.normalize();
   cam3.up.set(0, 1, 0);
-  frameAlong(dir, fitWindow());
+  if (S.follow) cam3.position.copy(controls.target).addScaledVector(dir, cam3.position.distanceTo(controls.target));
+  else frameAlong(dir, fitWindow());
   controls.update();
   saveView();
 }
 
 // re-fit the current view angle, e.g. after the pictures beside the 3D scene move
 function refit() {
+  if (S.follow) return;                 // nothing to fit: the view sits on the camera
   const dir = cam3.position.clone().sub(controls.target).normalize();
   frameAlong(dir, fitWindow());
   controls.update();
   saveView();
 }
 
+// While following, the followed camera (the orbit target) sits in the middle of the clear part of the 3D
+// view (beside the pictures, in 3D scene), by moving the projection's center rather than the camera.
+function centerView() {
+  if (!S.follow) { if (cam3.view?.enabled) cam3.clearViewOffset(); return; }
+  const v = rects().view, w = fitWindow();
+  cam3.setViewOffset(v.w, v.h, (-w.cx * v.w) / 2, (w.cy * v.h) / 2, v.w, v.h);
+}
+
+// the view angle a take opens from: the last one chosen in this layout
+function startDir() {
+  const angle = store.angles[layout] || START_ANGLES[layout];
+  const pb = pathBasis();
+  return pb && angle.path ? fromRel(pb, angle.path) : fromRel(sceneBasis(), angle.scene);
+}
+
 function restoreView() {
   cam3.fov = 35;
   cam3.updateProjectionMatrix();
-  const exact = store.views[T.name]?.[layout];
+  centerView();
+  cam3.up.set(0, 1, 0);
+  const exact = store.views[T.name]?.[viewKey()];
+  if (S.follow) {
+    // the same offset from the camera as last time, or a few camera sizes back from the usual angle
+    const off = exact ? v3(...exact.p).sub(v3(...exact.t)) : startDir().multiplyScalar(S.camSize * FOLLOW_DISTANCE);
+    controls.target.copy(T.frames[frame].pos);
+    cam3.position.copy(controls.target).add(off);
+    controls.update();
+    return;
+  }
   if (exact) {
     cam3.position.fromArray(exact.p);
     controls.target.fromArray(exact.t);
     controls.update();
     return;
   }
-  const angle = store.angles[layout] || START_ANGLES[layout];
-  const pb = pathBasis();
-  const dir = pb && angle.path ? fromRel(pb, angle.path) : fromRel(sceneBasis(), angle.scene);
-  cam3.up.set(0, 1, 0);
-  frameAlong(dir, fitWindow());
+  frameAlong(startDir(), fitWindow());
   controls.update();
   saveView();
+}
+
+// Follow camera: carry the view along with the moving camera, keeping its offset (orbiting still works)
+function followCamera(i) {
+  centerView();
+  if (!S.follow) return;
+  const d = v3().subVectors(T.frames[i].pos, controls.target);
+  controls.target.add(d);
+  cam3.position.add(d);
 }
 
 function updateCamera() {
@@ -1186,6 +1223,7 @@ function render(i, src, { alpha = false, t = 0, period = WIGGLE_PERIOD } = {}) {
     liveTex.needsUpdate = true;
   }
   updateOverlay(i);
+  followCamera(i);
   updateCamera();
   const cam = viewCamera(t, period);
   renderer.setClearColor(S.bg3d, alpha || fx().transparent3d ? 0 : 1);
@@ -1554,6 +1592,7 @@ function settingChanged(property, value) {
   if (RESIZE.has(property) || property === 'showInset' || gridChanged) { setRenderSize(1); fitStage(); }
   if (REFIT.has(property) || gridChanged) refit();
   if (REGRADE.has(property)) regradeTextures();
+  if (property === 'follow') restoreView();
   save();
 }
 function setSetting(key, value) {
@@ -1591,6 +1630,7 @@ function buildGui() {
   c.add(S, 'inputSize', 0.05, 2, 0.01).name('Input size');
 
   const v = gui.addFolder('View');
+  v.add(S, 'follow').name('Follow camera');
   const angle = v.add(ui, 'angle', { 'Choose…': '', 'Three-quarter': 'three-quarter', Side: 'side', Top: 'top', Behind: 'behind' })
     .name('Snap to angle')
     .onChange((a) => { if (a) { applyPreset(a); ui.angle = ''; angle.updateDisplay(); } });
