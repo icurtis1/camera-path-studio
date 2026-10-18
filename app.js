@@ -45,6 +45,7 @@ const BASE = {
   showHud: false, title: 'Atlas', subtitle: 'Camera-controlled generation', showStats: true, showProgress: true, showLabels: true,
   // 3D scene
   bg3d: '#0d0e12', grid: true, gridY: 0, cloud: false, cloudSize: 0.012, cloudOpacity: 1,
+  clip: false, clipHeight: 0.8,        // hide the point cloud above a height (0 = its bottom, 1 = its top)
   // export
   exportName: '',
 };
@@ -177,6 +178,7 @@ video.muted = true; video.playsInline = true; video.loop = true;
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.localClippingEnabled = true;               // for the point cloud's ceiling clip
 const gl = renderer.domElement;
 const scene3 = new THREE.Scene();
 const fog = new THREE.Fog('#ffffff', 1, 10);
@@ -198,6 +200,7 @@ const world = new THREE.Group();   // grid + point cloud
 const ov = new THREE.Group();      // path, frustums (rebuilt on style changes)
 scene3.add(world, ov);
 let grid = null, cloud = null;
+const ceiling = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);   // keeps what's below it
 const lineMats = [];
 const dotMats = [];
 const O = {};                      // handles to overlay objects
@@ -534,15 +537,26 @@ function rebuildCloud() {
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   cloud = new THREE.Points(geo, new THREE.PointsMaterial({ vertexColors: true, sizeAttenuation: true }));
+  // its height range, for the ceiling clip: low and high percentiles of a sample, so stray points don't count
+  const ys = [];
+  for (let k = 1; k < pos.length; k += 3 * 40) ys.push(pos[k]);
+  ys.sort((a, b) => a - b);
+  cloud.userData.y0 = ys[Math.floor(ys.length * 0.01)];
+  cloud.userData.y1 = ys[Math.floor(ys.length * 0.99)];
   styleCloud();
   world.add(cloud);
 }
 
-// point size and opacity; see-through points don't hide what's behind them (no depth writes)
+// point size, opacity and the ceiling clip; see-through points don't hide what's behind them (no depth writes)
 function styleCloud() {
-  const m = cloud.material, seeThrough = S.cloudOpacity < 1;
+  const m = cloud.material, seeThrough = S.cloudOpacity < 1, { y0, y1 } = cloud.userData;
   m.size = S.cloudSize;
   m.opacity = S.cloudOpacity;
+  ceiling.constant = y0 + S.clipHeight * (y1 - y0);
+  if ((m.clippingPlanes?.length > 0) !== S.clip) {
+    m.clippingPlanes = S.clip ? [ceiling] : null;
+    m.needsUpdate = true;
+  }
   if (m.transparent !== seeThrough) {
     m.transparent = seeThrough;
     m.depthWrite = !seeThrough;
@@ -1586,7 +1600,7 @@ function settingChanged(property, value) {
   if (REBUILD_GRID.has(property)) rebuildGrid();
   if (REBUILD_OVERLAY.has(property)) rebuildOverlay();
   if (property === 'cloud' || property === 'inputCount') refreshCloud();
-  if ((property === 'cloudSize' || property === 'cloudOpacity') && cloud) styleCloud();
+  if (['cloudSize', 'cloudOpacity', 'clip', 'clipHeight'].includes(property) && cloud) styleCloud();
   // in Breakdown, the input grid decides how much of the column the 3D view gets
   const gridChanged = layout === 'breakdown' && (property === 'showInput' || property === 'inputCount');
   if (RESIZE.has(property) || property === 'showInset' || gridChanged) { setRenderSize(1); fitStage(); }
@@ -1670,6 +1684,8 @@ function buildGui() {
   s.add(S, 'cloud').name('Point cloud');
   s.add(S, 'cloudSize', 0.001, 0.06, 0.001).name('Point size');
   s.add(S, 'cloudOpacity', 0, 1, 0.01).name('Point opacity');
+  s.add(S, 'clip').name('Clip ceiling');
+  s.add(S, 'clipHeight', 0, 1, 0.01).name('Clip height');
 
   const e = gui.addFolder('Export');
   e.add(S, 'exportName').name('File name');
